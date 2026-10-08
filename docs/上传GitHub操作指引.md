@@ -1,8 +1,10 @@
 # 上传到 GitHub 的操作指引
 
 > 状态（2026-10-08 17:35 更新）：**本地已全部就绪，唯一障碍是凭据失效。**
-> 仓库已初始化、四个提交（`70d24ca` / `46e072f` / `3f61baf` / `3825196`）、工作区干净。
-> 上传内容已逐项核对：**171 个文件 / 2.43 MB**，该带的全带、不该带的全排。
+> 仓库已初始化、**六个提交**、工作区干净。
+> （提交清单见第八节；那里**只列到 `93e3ed1`** —— 最后一个提交的 SHA 不写进它自己的内容里：
+> 内容一改 SHA 就变，写进去的立刻就是旧的。）
+> 上传内容已逐项核对：**172 个文件 / 2.45 MB**，该带的全带、不该带的全排。
 >
 > **本轮新增**：账号查清了（`renoo777`）；SSH 那 3 把钥匙逐把验过、全是部署密钥用不上（→ 第四节）；
 > 并且做了**不需要任何凭据**的转移文件 `prompter.bundle`，**你现在就能拷到 Mac 上跑**（→ 第五节）。
@@ -273,8 +275,8 @@ open src-tauri/target/release/bundle/macos/Prompter.app
 
 | 检查项 | 结果 |
 |---|---|
-| 文件数 | 171 |
-| 体积 | **2.43 MB** |
+| 文件数 | 172 |
+| 体积 | **2.45 MB** |
 | `src-tauri/target/`（**18 GB**） | ✅ 已排除 |
 | `node_modules/` | ✅ 已排除 |
 | `dist/` | ✅ 已排除 |
@@ -295,6 +297,8 @@ open src-tauri/target/release/bundle/macos/Prompter.app
 | `46e072f` | docs：补 GitHub 上传操作指引 |
 | `3f61baf` | scripts：加 push-to-github.py |
 | `3825196` | docs+scripts：如实记录凭据链路排查（token 失效 / GCM 网络不通 / wincred 只读） |
+| `93e3ed1` | docs：查清账号（renoo777）与 SSH 密钥性质，补零凭据转移方案（`prompter.bundle`） |
+| （最后一次） | docs：修正核对数字（172 文件 / 2.45 MB）、补本表、并记下上面这条「SHA 不写进自己」的约定 |
 
 ---
 
@@ -310,4 +314,4 @@ open src-tauri/target/release/bundle/macos/Prompter.app
 | `src refspec master does not match any` | 分支名是 `main`，加 `--branch main` |
 | `Updates were rejected` | 远端非空 ⇒ 建仓时别勾 README（脚本用 `auto_init: false` 已规避） |
 | `GCM 报 .NET 异常（0xE0434352）` | 这台机器的 GCM 跑不起来，**绕过它用 wincred**（脚本已这么做） |
-| 传到一半失败 | 体积只有 2.43MB，正常不会；重跑同一条命令即可续 |
+| 传到一半失败 | 体积只有 2.45MB，正常不会；重跑同一条命令即可续 |
