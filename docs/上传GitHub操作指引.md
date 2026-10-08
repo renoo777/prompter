@@ -1,8 +1,12 @@
 # 上传到 GitHub 的操作指引
 
-> 状态（2026-10-08 17:10 更新）：**本地已全部就绪，唯一障碍是凭据失效。**
-> 仓库已初始化、三个提交（`70d24ca` / `46e072f` / `3f61baf`）、工作区干净。
+> 状态（2026-10-08 17:35 更新）：**本地已全部就绪，唯一障碍是凭据失效。**
+> 仓库已初始化、四个提交（`70d24ca` / `46e072f` / `3f61baf` / `3825196`）、工作区干净。
 > 上传内容已逐项核对：**171 个文件 / 2.43 MB**，该带的全带、不该带的全排。
+>
+> **本轮新增**：账号查清了（`renoo777`）；SSH 那 3 把钥匙逐把验过、全是部署密钥用不上（→ 第四节）；
+> 并且做了**不需要任何凭据**的转移文件 `prompter.bundle`，**你现在就能拷到 Mac 上跑**（→ 第五节）。
+> **要上 GitHub 仍需你给一把新 token**（路线 A 或 B）。
 
 ---
 
@@ -38,8 +42,16 @@
 | `wincred`（Git for Windows 自带）**读**凭据 ✅ 可行 | ⇒ 只要凭据在凭据管理器里，推送就能跑通 |
 | `wincred` **写**凭据 ❌ 无效（`store` 返回 0 但不生效，`erase` 也无效） | ⇒ 那条凭据是 GCM 的 `wincredman` 格式存的，**wincred 只能读不能写**。所以要让凭据生效，得走图形界面编辑，或由 GCM 写入 |
 
-（顺带说明：你的真实 GitHub 用户名我没能拿到——token 一失效，`GET /user` 也返回 401。
-凭据管理器里存的用户名是 `x-access-token`，那是 token 认证的**占位值**，不是你的账号名。）
+### 顺带查清了两件事
+
+**① 你的 GitHub 账号是 `renoo777`。** token 一失效 `GET /user` 就 401，本来拿不到账号名；
+但从 SSH 那边问出来了（`ssh -T` 的问候语里带账号），所以推送地址是确定的：
+
+```
+https://github.com/renoo777/prompter
+```
+
+**② 你机器上有 3 把 SSH 私钥，但都是「部署密钥」，救不了这次。** 详情见第四节。
 
 ---
 
@@ -118,21 +130,43 @@ GITHUB_TOKEN=<新token> python scripts/push-to-github.py --repo prompter
 
 ---
 
-## 四、路线 C：你不想配 token，用 SSH
+## 四、路线 C：SSH —— 查过了，**现成的钥匙都用不上**
+
+我本来以为路线上有个捷径：你 `~/.ssh/` 里已经有 3 把私钥，说不定能用。
+**实测逐把验过，结论是否定的**，但过程有价值，写下来免得你或以后的重复查。
+
+| 私钥 | `ssh -T` 问回来的身份 | 能否用于 prompter |
+|---|---|---|
+| `flownav_dk` | `Hi renoo777/flow-navigator!` | ❌ **部署密钥**，只绑 flow-navigator 一个仓库 |
+| `taskboard_gh` | `Hi renoo777/task-board-extension!` | ❌ 同上，只绑 task-board-extension |
+| `flownav_push_6119` | `Permission denied (publickey)` | ❌ 已失效（临时钥匙，用完就该撤了） |
+
+**关键点：这三把的问候语都是 `Hi renoo777/<仓库名>!` 而不是 `Hi renoo777!`** ——
+这个格式差别正是「部署密钥」与「账号级密钥」的分水岭。部署密钥天生**只对一个仓库有效，
+且不能用来建仓库**。而我们要建的是 `renoo777/prompter` 这个新仓库，两样都占了。
+
+> 另外你 `~/.ssh/config` 里那段注释已经写过这个坑了（"复用会直接报 Key is already in use"），
+> 说明你当时就踩过。所以这次不用再去试复用。
+
+**要走 SSH 就得新起一把钥匙，而且有 2 步得你动手**（我没法代你上网页）：
 
 ```bash
-ls ~/.ssh/id_rsa.pub 2>/dev/null || ssh-keygen -t ed25519   # 没有就生成
-cat ~/.ssh/id_rsa.pub                                        # 贴到 GitHub → Settings → SSH keys
+ssh-keygen -t ed25519 -f ~/.ssh/prompter_gh -C "prompter push"   # 第 1 步：生成（我可以帮你跑）
+cat ~/.ssh/prompter_gh.pub                                        # 第 2 步：贴到 GitHub
 ```
 
-然后仍需先建仓库（或让我用别的方式建），再：
+- 贴到 **Settings → SSH and GPG keys → New SSH key**（账号级，不是仓库级）——
+  这样以后任何新仓库都不用再配一次；
+- 还得**先在网页上把 `prompter` 仓库建出来**（SSH 不能建仓库）；
+- ⚠️ 走 SSH 的话我的脚本用不上（它走 HTTPS + token），`remote` 和 `push` 得自己敲：
 
 ```bash
-git remote add origin git@github.com:<你的用户名>/prompter.git
+git remote add origin git@github.com:renoo777/prompter.git
 git push -u origin master
 ```
 
-> ⚠️ SSH 路线下我的脚本用不上（它走 HTTPS + token），需要你自己敲这两条。
+**⇒ 路线 C 要你做 3 件事（生成钥匙是第 4 步，那步我能代劳，但贴公钥、建仓库都在网页上）。**
+比路线 B 麻烦，只在"你不想让 token 经过对话"时才划算。
 
 ### ★ 关于「让 GCM 自动登录」这条路
 
@@ -145,7 +179,53 @@ git push -u origin master
 
 ---
 
-## 五、Mac 上怎么下载（你要的那个动作）
+## 五、路线 D：不走 GitHub，直接把仓库拷到 Mac（零凭据，本轮新增）
+
+你真正要的动作是「**在 Mac 上拿到能跑的代码**」，GitHub 只是手段。
+既然凭据卡住了，我先把**不需要任何凭据的产物**做出来了 —— 你现在就能拿去用。
+
+已经生成好两个文件（在仓库外，`D:\agent\Claw\2026-09-25-14-13-48\_transfer\`）：
+
+| 文件 | 大小 | 是什么 |
+|---|---|---|
+| **`prompter.bundle`** | 1.38 MB | **完整 git 仓库**（4 个提交、全部历史都在里面），推荐 |
+| `prompter-source.zip` | 1.44 MB | 源码快照（只有最新一版文件，无历史） |
+
+> **为什么推荐 `.bundle` 而不是 zip**：单个文件、却等价于一个完整的 git 远端。
+> 在 Mac 上 `git clone` 它，得到的是**有历史的真仓库**，文件模式（`build.sh` 的可执行位）
+> 也保住了。zip 两条都丢。
+
+**用法**（把 `prompter.bundle` 用微信/AirDrop/网盘随便什么方式拷到 Mac，然后）：
+
+```bash
+git bundle verify prompter.bundle          # 可选：先验一下完整性
+git clone prompter.bundle prompter         # 得到有完整历史的 prompter/
+cd prompter
+```
+
+**这样拷过来的仓库没有 remote**，等哪天 GitHub 通了，补一条就行：
+
+```bash
+git remote add origin https://github.com/renoo777/prompter.git
+git push -u origin master                  # 有过改动才需要
+```
+
+**若 Mac 上没装 git**（全新机器有可能），用 zip 兜底，但要补一步：
+
+```bash
+unzip prompter-source.zip && cd prompter
+chmod +x build.sh run-dev.sh               # ★ zip 丢可执行位，不补会 Permission denied
+```
+
+> 想重新生成这两个文件（比如后来又改了代码）：
+> ```bash
+> git bundle create ../_transfer/prompter.bundle --all
+> git archive --format=zip --prefix=prompter/ -o ../_transfer/prompter-source.zip HEAD
+> ```
+
+---
+
+## 六、Mac 上怎么下载（你要的那个动作）
 
 推送成功后，在 Mac 的终端里：
 
@@ -168,7 +248,7 @@ xcode-select --install
 
 ---
 
-## 六、Mac 上第一次跑的完整命令
+## 七、Mac 上第一次跑的完整命令
 
 ```bash
 git clone https://github.com/<你的用户名>/prompter.git
@@ -189,7 +269,7 @@ open src-tauri/target/release/bundle/macos/Prompter.app
 
 ---
 
-## 七、这次推了什么（已核对）
+## 八、这次推了什么（已核对）
 
 | 检查项 | 结果 |
 |---|---|
@@ -214,14 +294,17 @@ open src-tauri/target/release/bundle/macos/Prompter.app
 | `70d24ca` | 投屏隐身提词器（macOS 上机测试前状态） |
 | `46e072f` | docs：补 GitHub 上传操作指引 |
 | `3f61baf` | scripts：加 push-to-github.py |
+| `3825196` | docs+scripts：如实记录凭据链路排查（token 失效 / GCM 网络不通 / wincred 只读） |
 
 ---
 
-## 八、如果推送时出问题
+## 九、如果推送时出问题
 
 | 现象 | 处置 |
 |---|---|
 | **`HTTP 401 Bad credentials`（就是现在这个）** | **token 已过期或被撤销** ⇒ 走第二节换新 token |
+| `ERROR: Repository not found`（走 SSH 时） | 用了部署密钥 ⇒ 它只认绑定的那一个仓库；见第四节 |
+| `Key is already in use`（贴公钥时） | 公钥已在账号内别处用过（部署密钥不可复用）⇒ 重新生成一把 |
 | `fatal: Authentication failed` | 同上；或新 token 没勾 `repo` 权限 |
 | `remote: Permission denied` | 仓库名拼错，或 token 属于另一个账号 |
 | `src refspec master does not match any` | 分支名是 `main`，加 `--branch main` |
