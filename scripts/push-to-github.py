@@ -9,13 +9,15 @@
   3. 顺带做推送前的自检：把不该上传的东西（target/、node_modules/）挡在推送前，
      而不是等 GitHub 拒收或传了 18GB 才发现。
 
--token 的来源（按优先级）：
-  1. 环境变量 GITHUB_TOKEN
-  2. Windows 凭据管理器（git-credential-wincred 里 host=github.com 那条）
-  **token 只在内存里用，不落盘、不打印。**
+token 的来源（按优先级，**逐条验证、用第一条能通的**）：
+  1. 环境变量 GITHUB_TOKEN / GH_TOKEN
+  2. Windows 凭据管理器里**全部** `git:https://*` 条目
+     ★ 不只是 `git:https://github.com` —— GitHub 的 HTTPS 会让 git 按解析出的 IP
+       另存一份凭据（本机实测有 4 条 140.82.x.x）。用户改了一条，git 未必读它。
+  **token 只在内存里用、不打印；喂给 git 时写进临时凭据文件，推完立即删除。**
 
 用法：
-    python scripts/push-to-github.py --repo prompter            # 自动读凭据
+    python scripts/push-to-github.py --repo prompter            # 自动找可用凭据
     python scripts/push-to-github.py --repo prompter --check    # 只验凭据，不推送
     python scripts/push-to-github.py --repo prompter --private  # 建私有仓库
 """
@@ -37,9 +39,6 @@ GIT_CANDIDATES = [
     r"C:\Users\26611\.workbuddy\binaries\PortableGit\versions\1.2.0\cmd\git.exe",
     "git",
 ]
-WINCRED_CANDIDATES = [
-    r"C:\Users\26611\.workbuddy\binaries\PortableGit\versions\1.2.0\mingw64\bin\git-credential-wincred.exe",
-]
 
 
 def find_first(paths):
@@ -53,7 +52,6 @@ def find_first(paths):
 
 
 GIT = find_first(GIT_CANDIDATES)
-WINCRED = find_first(WINCRED_CANDIDATES)
 
 
 def clean_env():
@@ -75,26 +73,86 @@ def git(*args, check=True):
     return p
 
 
-def token_from_wincred():
-    if not WINCRED or not os.path.exists(WINCRED):
-        return None
-    p = subprocess.run([WINCRED, "get"], input="protocol=https\nhost=github.com\n\n",
-                       capture_output=True, text=True, encoding="utf-8",
-                       errors="replace", env=clean_env(), timeout=25)
-    for line in (p.stdout or "").splitlines():
-        if line.startswith("password="):
-            return line[len("password="):].strip()
-    return None
+def cred_manager_tokens():
+    """枚举 Windows 凭据管理器里**所有** git 凭据 → [(target, token), ...]
+
+    ★ 为什么不能只读 `git:https://github.com`（2026-10-08 真踩）：
+    GitHub 的 HTTPS 会让 git 按**解析出的 IP** 另存一份凭据 —— 实测本机有
+    `git:https://140.82.112.4` / `140.82.116.4` / `140.82.113.3` / `140.82.121.3`
+    共 4 条。用户去凭据管理器里"改那条今天动过的"，很可能改的是 IP 那条，
+    而 git 默认读的仍是 `github.com` 那条（旧的）⇒ 症状是
+    **"我明明改了 token，怎么还是 401"**。
+    ⇒ 正确做法：把全部列出来、逐条验，用第一条能通的。
+    """
+    if os.name != "nt":
+        return []
+    try:
+        import ctypes
+        import ctypes.wintypes as wt
+    except Exception:
+        return []
+
+    class FILETIME(ctypes.Structure):
+        _fields_ = [("dwLowDateTime", wt.DWORD), ("dwHighDateTime", wt.DWORD)]
+
+    class CREDENTIAL_ATTRIBUTEW(ctypes.Structure):
+        _fields_ = [("Keyword", wt.LPWSTR), ("Flags", wt.DWORD),
+                    ("ValueSize", wt.DWORD), ("Value", ctypes.POINTER(ctypes.c_byte))]
+
+    class CREDENTIALW(ctypes.Structure):
+        _fields_ = [
+            ("Flags", wt.DWORD), ("Type", wt.DWORD),
+            ("TargetName", wt.LPWSTR), ("Comment", wt.LPWSTR),
+            ("LastWritten", FILETIME),
+            ("CredentialBlobSize", wt.DWORD),
+            ("CredentialBlob", ctypes.POINTER(ctypes.c_byte)),
+            ("Persist", wt.DWORD), ("AttributeCount", wt.DWORD),
+            ("Attributes", ctypes.POINTER(CREDENTIAL_ATTRIBUTEW)),
+            ("TargetAlias", wt.LPWSTR), ("UserName", wt.LPWSTR),
+        ]
+
+    advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
+    advapi32.CredEnumerateW.argtypes = [
+        wt.LPCWSTR, wt.DWORD, ctypes.POINTER(wt.DWORD),
+        ctypes.POINTER(ctypes.POINTER(ctypes.POINTER(CREDENTIALW)))]
+    advapi32.CredEnumerateW.restype = wt.BOOL
+    advapi32.CredFree.argtypes = [ctypes.c_void_p]
+
+    count = wt.DWORD(0)
+    pcreds = ctypes.POINTER(ctypes.POINTER(CREDENTIALW))()
+    if not advapi32.CredEnumerateW(None, 0, ctypes.byref(count), ctypes.byref(pcreds)):
+        return []
+    out = []
+    try:
+        for i in range(count.value):
+            c = pcreds[i].contents
+            target = c.TargetName or ""
+            if not target.startswith("git:https://"):
+                continue
+            if not (c.CredentialBlobSize and c.CredentialBlob):
+                continue
+            # ★ 必须 string_at：CredentialBlob 是有符号 c_byte 指针，
+            #   转 bytearray 会在 >127 的字节上抛 ValueError。
+            blob = ctypes.string_at(c.CredentialBlob, c.CredentialBlobSize)
+            tok = blob.decode("utf-16-le", "replace").rstrip("\x00").strip()
+            if tok:
+                out.append((target, tok))
+    finally:
+        advapi32.CredFree(pcreds)
+    return out
 
 
-def get_token():
-    tok = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
-    if tok:
-        return tok.strip(), "环境变量"
-    tok = token_from_wincred()
-    if tok:
-        return tok, "Windows 凭据管理器"
-    return None, None
+def gather_candidates():
+    """按优先级收集候选凭据 → [(来源说明, token, 是否来自环境变量), ...]"""
+    cands = []
+    for k in ("GITHUB_TOKEN", "GH_TOKEN"):
+        v = (os.environ.get(k) or "").strip()
+        if v:
+            cands.append((k + " 环境变量", v, True))
+    # 环境变量最优先；其余按凭据管理器里 git 凭据的顺序（github.com 一般最前）
+    for target, tok in cred_manager_tokens():
+        cands.append(("凭据管理器 → " + target, tok, False))
+    return cands
 
 
 def api(path, token, method="GET", payload=None):
@@ -154,22 +212,37 @@ def main():
         print("✗ 找不到 git")
         return 2
 
-    token, src = get_token()
-    if not token:
-        print("✗ 没有可用凭据。")
+    cands = gather_candidates()
+    if not cands:
+        print("✗ 没有找到任何候选凭据。")
         print("  → 设 GITHUB_TOKEN 环境变量，或往 Windows 凭据管理器里加一条")
         print("    git:https://github.com （用户名填 x-access-token，密码填 PAT）")
         return 3
-    print("token 来源：%s" % src)
 
-    st, me = api("/user", token)
-    if st != 200:
-        print("✗ 凭据无效：HTTP %s %s" % (st, me.get("message", "")))
-        print("  → token 过期或被撤销了，需要一把新的（Settings → Developer settings"
-              " → Personal access tokens → 勾 repo 权限）")
+    print("找到 %d 条候选凭据，逐条验证…" % len(cands))
+    token = src = None
+    from_env = False
+    me = {}
+    seen = set()
+    tried = []
+    for label, tok, is_env in cands:
+        if tok in seen:      # 同一把 token 在多个条目里出现，只验一次
+            continue
+        seen.add(tok)
+        st, me = api("/user", tok)
+        if st == 200:
+            token, src, from_env = tok, label, is_env
+            break
+        tried.append((label, st, me.get("message", "") if isinstance(me, dict) else ""))
+    for label, st, msg in tried:
+        print("  ✗ %s → HTTP %s %s" % (label, st, msg))
+    if not token:
+        print("\n✗ 全部候选凭据都无效 ⇒ 需要一把新的 token")
+        print("  → Settings → Developer settings → Personal access tokens → 勾 repo 权限")
         return 4
     login = me["login"]
     print("✓ 已认证：%s" % login)
+    print("  token 来源：%s" % src)
 
     st, repo = api("/repos/%s/%s" % (login, args.repo), token)
     if st == 200:
@@ -218,32 +291,31 @@ def main():
     branch = args.branch or (git("branch", "--show-current", check=False).stdout.strip() or "master")
     print("· 推送分支 %s …" % branch)
 
-    # 凭据怎么喂给 git —— 两条来源、两种喂法（都实测过）：
+    # ★★ 凭据怎么喂给 git：**一律显式喂"刚验过的那把"**，绝不让 git 自己去读。
     #
-    #   * 凭据管理器来源：直接让 wincred 读。**读是可靠的**（实测能取到）。
+    #   为什么不能用 `credential.helper=wincred`：wincred 只会读
+    #   `git:https://github.com` 那一条 —— 而**能用的那把可能在 IP 条目里**
+    #   （本机实测：github.com 那条 401，140.82.112.4 那条才有效）。
+    #   让 git 自己读 ⇒ 又拿到旧 token ⇒ 401，而我们已经验过 token 是好的，
+    #   会误判成"推送失败是权限问题"。**验过的必须就是用的那把。**
     #
-    #   * 环境变量来源：用**临时凭据文件** + store helper，不用另外两种写法：
-    #       - 内联 `!f(){}` helper：会让 git 起一个 sh 子进程，本沙箱直接 SIGTERM；
-    #       - `wincred store`：实测**写不进去**（那条凭据是 GCM 的 wincredman 格式
-    #         存的，wincred 能读不能写，store 返回 0 但不生效）。
-    #     临时文件只含一行，推完立刻删，不污染全局凭据。
+    #   喂法用**临时凭据文件** + store helper，不用另外两种写法：
+    #     - 内联 `!f(){}` helper：会让 git 起一个 sh 子进程，本沙箱直接 SIGTERM；
+    #     - `wincred store`：实测**写不进去**（github.com 那条是 GCM 的 wincredman
+    #       格式存的，wincred 能读不能写，store 返回 0 但不生效）。
+    #   临时文件只含一行，推完 finally 里立刻删，不污染全局凭据。
     #
     # 为什么不走 GCM 的自动登录：本机 GCM 2.9 装了、也能跑（前提 git 在 PATH 里，
     # 否则报 "Failed to locate 'git.exe'"），但设备码/浏览器登录要访问 github.com
     # 主站，在沙箱代理下报「基础连接已经关闭」；而 git 走 libcurl 是通的
     # （实测 ls-remote 返回了 commit hash）⇒ 绕过 GCM 直连更可靠。
-    tmp_cred = None
-    if src == "环境变量":
-        import tempfile
-        fd, tmp_cred = tempfile.mkstemp(prefix="prompter-cred-", suffix=".txt")
-        os.close(fd)
-        with open(tmp_cred, "w", encoding="utf-8") as f:
-            f.write("https://x-access-token:%s@github.com\n" % token)
-        helper = "store --file=" + tmp_cred.replace("\\", "/")
-        print("· 已准备临时凭据（推送后立即删除）")
-    else:
-        helper = "wincred"
-        print("· 用 Windows 凭据管理器里的 token")
+    import tempfile
+    fd, tmp_cred = tempfile.mkstemp(prefix="prompter-cred-", suffix=".txt")
+    os.close(fd)
+    with open(tmp_cred, "w", encoding="utf-8") as f:
+        f.write("https://x-access-token:%s@github.com\n" % token)
+    helper = "store --file=" + tmp_cred.replace("\\", "/")
+    print("· 已把验过的 token 写进临时凭据文件（推送后立即删除）")
 
     try:
         push = subprocess.run(
