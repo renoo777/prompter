@@ -218,16 +218,53 @@ def main():
     branch = args.branch or (git("branch", "--show-current", check=False).stdout.strip() or "master")
     print("· 推送分支 %s …" % branch)
 
-    # ★ 走 wincred helper，让 git 自己取凭据 —— token 不进命令行、不进历史
-    push = subprocess.run(
-        [GIT, "-c", "credential.helper=wincred", "push", "-u", "origin", branch],
-        cwd=ROOT, capture_output=True, text=True, encoding="utf-8",
-        errors="replace", env=clean_env(),
-    )
+    # 凭据怎么喂给 git —— 两条来源、两种喂法（都实测过）：
+    #
+    #   * 凭据管理器来源：直接让 wincred 读。**读是可靠的**（实测能取到）。
+    #
+    #   * 环境变量来源：用**临时凭据文件** + store helper，不用另外两种写法：
+    #       - 内联 `!f(){}` helper：会让 git 起一个 sh 子进程，本沙箱直接 SIGTERM；
+    #       - `wincred store`：实测**写不进去**（那条凭据是 GCM 的 wincredman 格式
+    #         存的，wincred 能读不能写，store 返回 0 但不生效）。
+    #     临时文件只含一行，推完立刻删，不污染全局凭据。
+    #
+    # 为什么不走 GCM 的自动登录：本机 GCM 2.9 装了、也能跑（前提 git 在 PATH 里，
+    # 否则报 "Failed to locate 'git.exe'"），但设备码/浏览器登录要访问 github.com
+    # 主站，在沙箱代理下报「基础连接已经关闭」；而 git 走 libcurl 是通的
+    # （实测 ls-remote 返回了 commit hash）⇒ 绕过 GCM 直连更可靠。
+    tmp_cred = None
+    if src == "环境变量":
+        import tempfile
+        fd, tmp_cred = tempfile.mkstemp(prefix="prompter-cred-", suffix=".txt")
+        os.close(fd)
+        with open(tmp_cred, "w", encoding="utf-8") as f:
+            f.write("https://x-access-token:%s@github.com\n" % token)
+        helper = "store --file=" + tmp_cred.replace("\\", "/")
+        print("· 已准备临时凭据（推送后立即删除）")
+    else:
+        helper = "wincred"
+        print("· 用 Windows 凭据管理器里的 token")
+
+    try:
+        push = subprocess.run(
+            [GIT, "-c", "credential.helper=" + helper, "push", "-u", "origin", branch],
+            cwd=ROOT, capture_output=True, text=True, encoding="utf-8",
+            errors="replace", env=clean_env(),
+        )
+    finally:
+        if tmp_cred and os.path.exists(tmp_cred):
+            try:
+                os.remove(tmp_cred)
+                print("· 临时凭据已删除")
+            except OSError:
+                print("⚠️ 临时凭据没删掉，请手动删除：%s" % tmp_cred)
+
     out = (push.stdout or "") + (push.stderr or "")
     print(out.strip()[-1500:] if out.strip() else "(无输出)")
     if push.returncode != 0:
         print("\n✗ 推送失败（rc=%s）" % push.returncode)
+        if "Authentication failed" in out or "403" in out or "401" in out:
+            print("  → 凭据问题：token 可能过期，或没勾 repo 权限")
         return 8
 
     print("\n✅ 完成：https://github.com/%s/%s" % (login, args.repo))
