@@ -1,0 +1,48 @@
+# 换行符策略：入库统一 LF，检出按平台自动处理
+#
+# 为什么需要这个文件（2026-10-08 实测踩到）：
+#   Windows 上 git 默认 core.autocrlf=true，会把仓库里的 LF **改写成 CRLF**。
+#   `build.sh` 那种脚本拿到 CRLF 后，在 macOS 上执行会直接报
+#   `bad interpreter: .../build.sh: CRLF line endings` —— 编译根本不开始，
+#   报错信息还指向 Python，完全指不到真凶。
+#
+# 规则：
+#   *  本文件必须保持 LF 换行（它自己也在列表里）
+#   *  文本文件入库一律 LF
+#   *  shell 脚本检出时强制 LF（哪怕在 Windows 上 checkout）
+#   *  Windows 批处理保留 CRLF，否则 cmd 认不出
+
+* text=auto eol=lf
+
+*.sh    text eol=lf
+*.bash  text eol=lf
+*.command text eol=lf
+
+*.bat   text eol=crlf
+*.cmd   text eol=crlf
+
+# 二进制：明确不许被换行符处理碰
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+*.ico   binary
+*.icns  binary
+*.pdf   binary
+*.mp3   binary
+*.mp4   binary
+*.exe   binary
+*.onnx  binary
+*.bin   binary
+
+# Rust / 前端：明确 LF
+*.rs    text eol=lf
+*.ts    text eol=lf
+*.tsx   text eol=lf
+*.js    text eol=lf
+*.css   text eol=lf
+*.html  text eol=lf
+*.json  text eol=lf
+*.md    text eol=lf
+*.toml  text eol=lf
+*.py    text eol=lf

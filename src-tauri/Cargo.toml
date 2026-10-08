@@ -1,0 +1,76 @@
+[package]
+name = "prompter"
+version = "0.1.0"
+description = "投屏隐身提词器 — 语音跟随滚动，会议共享时不可见"
+authors = ["超人强"]
+edition = "2021"
+rust-version = "1.77"
+
+[lib]
+name = "prompter_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[features]
+default = ["local-asr"]
+# 本地离线语音识别（sherpa-onnx + cpal）。
+#
+# 做成可选特性而不是硬依赖，理由有两个：
+#   1. 首次编译 sherpa-onnx 会从网络拉一份预编译的 onnxruntime 静态库，
+#      体积不小；只想改 UI 的时候可以 `--no-default-features` 跳过。
+#   2. 万一某个平台构建失败，产品仍能以「手动模式」完整跑起来 ——
+#      隐身提词器的核心价值是"投屏看不见"，不该被语音模块拖死。
+local-asr = ["dep:sherpa-onnx", "dep:cpal"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+# `tray-icon` 不是可选装饰：`skipTaskbar: true` + 鼠标穿透 + 低透明度叠在一起，
+# 会让窗口彻底找不回来。托盘是穿透功能的安全前提（见 src/tray.rs）。
+tauri = { version = "2", features = ["macos-private-api", "tray-icon"] }
+tauri-plugin-global-shortcut = "2"
+tauri-plugin-dialog = "2"
+tauri-plugin-log = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+log = "0.4"
+# 稿件解码：国内大量存量 .txt 是 GBK，用 UTF-8 硬解会得到乱码而不报错
+encoding_rs = "0.8"
+# .docx / .pptx 都是 ZIP 包，解包才能读到里面的 XML（见 src/doc.rs）。
+#
+# `default-features = false` 是刻意的：默认特性会拖进 aes / bzip2 / lzma / zstd / zlib
+# 一整排解压后端，而 Office 文件只用 deflate。多带的每一个都是白编译的代码与白背的攻击面。
+zip = { version = "2", default-features = false, features = ["deflate"] }
+# 取窗口的原生句柄（HWND / NSView*）交给隐身层。
+# 版本必须与 tauri 2 内部使用的一致，否则 HasWindowHandle 的 trait 对不上。
+raw-window-handle = "0.6"
+
+sherpa-onnx = { version = "1.13", optional = true }
+cpal = { version = "0.15", optional = true }
+
+# Windows 侧零额外依赖：隐身与窗口操作全部走手写 FFI（见 src/stealth/windows.rs）。
+# 这样能完全避开 windows / windows-sys 的 feature 组合与版本漂移。
+[target.'cfg(windows)'.dependencies]
+
+# macOS 侧也刻意不引入 objc2 / objc2-app-kit —— 那两个 crate 在 0.x 阶段 API 变动快，
+# 在无法真机验证的情况下写出的绑定很可能对不上版本。改用 runtime FFI + libc。
+[target.'cfg(target_os = "macos")'.dependencies]
+libc = "0.2"
+
+[lints.rust]
+# `prompter_check_macos` 不是 Cargo 的保留 cfg 名，不声明的话每次开这个检查
+# 都会额外报一条 `unexpected_cfgs` —— 而门槛是"零警告"，
+# 于是一个**只该报真错的检查**会先自己把门槛弄红。
+# 声明它是"已知的自定义 cfg"，这条噪声就没了。
+#
+# ★ 它由 `scripts/check-macos-backend.py` 通过 `RUSTFLAGS=--cfg ...` 打开，
+#   用来在 Windows 上把 `stealth/macos.rs` 强制编译一遍（见 stealth/mod.rs 的 `macos_check`）。
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(prompter_check_macos)'] }
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

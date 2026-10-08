@@ -1,0 +1,2515 @@
+/* Prompter —— 提词器主界面样式
+ *
+ * 设计取向：全程深色、低饱和、无装饰。
+ *
+ * 理由不是"好看"，是使用场景决定的 —— 这个窗口会长时间浮在 PPT 之上，
+ * 视线要在「PPT」和「稿件」之间高频切换。浅色底会让瞳孔反复收缩，
+ * 讲二十分钟就开始累；高饱和的彩色块会在余光里持续抢注意力。
+ * 所以这里只有一层深底 + 一档强调色（蓝），其余全靠字重和明度区分层级。
+ *
+ * # 与 Apple HIG（Liquid Glass）的关系
+ *
+ * 借鉴的是**结构**，不是配色：
+ *   * 玻璃只用在导航层（顶栏 / 浮层），稿件正文永远是实色
+ *     —— Apple 的原话是 "Liquid Glass is best reserved for the navigation
+ *     layer that floats above the content of your app"，恰好和我们
+ *     "文字要看得清" 的诉求同向；
+ *   * 绝不叠玻璃（玻璃无法正确采样另一层玻璃）；
+ *   * 小控件圆角矩形、主按钮胶囊；圆角同心（外层 R → 内层 R − padding）。
+ *
+ * 为了玻璃**真的有效**，顶栏改成了浮在稿件之上（position: absolute），
+ * 稿件从它们下面滚过去。否则玻璃背后只有一层纯色，等于什么都没做
+ * —— 那正是"承诺了但看不出效果"的典型失败。
+ */
+
+:root {
+  /* 颜色用「空格分隔的 RGB 分量」而不是 hex —— 这样才能用
+   * rgb(var(--x) / 0.08) 这种写法随手调透明度，不用为每个透明度档位
+   * 单独定义一个颜色变量。 */
+  --bg: 14 17 22;
+  --panel: 20 25 32;
+  --panel-2: 26 32 40;
+  /* 设置面板的「分组卡片」。Apple 的 inset grouped list 里，
+   * 卡片与页面底色必须**同色系但不同层**，靠明度差分层而不是靠描边 ——
+   * 描边一多，小窗口里就全是线。 */
+  --card: 25 30 38;
+  --card-hi: 34 40 50;
+  --hair: 255 255 255;
+  --fg: 230 232 235;
+  --fg-dim: 140 148 160;
+  --fg-faint: 92 100 112;
+  --accent: 59 130 246;
+  --ok: 52 211 153;
+  --warn: 245 158 11;
+  --err: 239 68 68;
+
+  /* 由设置页写入的排版参数 */
+  --fs: 34px;
+  --lh: 1.7;
+  --ls: 0.01em;
+  --pad-x: 28px;
+  --align: left;
+  --win-alpha: 0.94;
+  /* 跟读颜色 —— 正文里"正在念"的指示色（当前句底色 + 左侧竖条 + 播放头）。
+   * 默认绿，由设置页「跟读 › 跟读颜色」写入。
+   * ★ 它与 `--accent`（蓝）是**两回事**：accent 是"用户自己按下的东西"
+   *   （暂停、查找命中），read 是"语音正在这里"。早先两者共用 accent，
+   *   于是"我念到哪"和"我刚点了哪"在屏幕上是一个颜色。 */
+  --read: 52 211 153;
+
+  /* 圆角：外层与内层保持同心（内层 = 外层 − 内边距），
+   * 不同心的话嵌套处会出现一条视觉上歪掉的缝。 */
+  --r-outer: 12px;
+  --r-card: 10px;
+  --r-ctrl: 6px;
+  --r-pill: 999px;
+
+  /* 动效统一收口。之前各处散落 0.12s / 0.15s / 0.18s / 0.2s，
+   * 快慢不一会让界面显得"零件感"很重。
+   *
+   * ★★ 2026-09-27 全面换血：从"三档时长 + 一条缓动"扩成一套**动效 token**。
+   *   依据是 Uiverse.io（`uiverse.io/elements`，其开源库 `uiverse-io/galaxy`，
+   *   MIT）的公开惯例 + 它那篇 motion UI 指南里点名的事实：
+   *     微交互的舒适区间是 **150–250ms**；
+   *     只动 `transform` / `opacity` 才稳上 60fps（不触发 layout / paint）；
+   *     平台级做法是"把时长与缓动做成 token、和颜色排版并列"（Material 3 同口径）。
+   *
+   *   下面四档**不是拍脑袋**，是从"谁在动"反推的：
+   *     --t-press  按下/抬起这种"手还在上面"的反馈 ⇒ 必须比手快，几乎瞬时
+   *     --t-fast   悬停、图标换色这类小面积变化 ⇒ 一眨眼完成
+   *     --t-base   面板展开、状态切换 ⇒ 能看清"从哪来、到哪去"的最小值
+   *     --t-enter  浮层进场（设置抽屉、历史、提示条）⇒ 允许稍长，因为它要交代层级
+   *   ★ 上限守死 250ms：Uiverse 那条"微交互不超过 250ms"的意见在提词器里要更严 ——
+   *     用户念稿时，动画还在播就是**在和稿子抢视线**。 */
+  --t-press: 90ms;
+  --t-fast: 140ms;
+  --t-base: 190ms;
+  --t-enter: 240ms;
+
+  /* 缓动族。三条各管一件事，别互相借用：
+   *
+   *   --ease        通用进出（ease-out 家族）—— 位移、淡出。
+   *                 原来是 `cubic-bezier(0.32,0.72,0,1)`（一条较陡的 ease-out），
+   *                 保留：它在"收起来"那种大幅位移上表现很好。
+   *   --ease-back   **带一点过冲**的 ease-out。Uiverse 的元素几乎人手一条
+   *                 （最常用的是 `cubic-bezier(0.175,0.885,0.32,1.275)`，
+   *                 标准的 easeOutBack）。
+   *                 ★ 它只用在**"东西出现/长出来"**的地方（浮层入场、按钮按下回弹、
+   *                 开关滑块落位）。位移的绝对量必须小 —— 过冲在 4px 上是"弹"，
+   *                 在 40px 上就是"甩"，会晕。
+   *   --ease-in    退场专用（ease-in 家族）—— 东西走的时候要"加速离开"，
+   *                 用进场那条会让它拖泥带水地粘在原地。
+   */
+  --ease: cubic-bezier(0.32, 0.72, 0, 1);
+  --ease-back: cubic-bezier(0.34, 1.4, 0.5, 1);
+  --ease-in: cubic-bezier(0.4, 0, 1, 1);
+
+  /* 导航层高度。
+   *
+   * ★★ 本轮改版把**两条栏合成了一条**，这几个数描述的东西也跟着变了：
+   *
+   *   `--h-top`      那**唯一**的一条栏。它同时是顶栏、状态栏和播放控制 ——
+   *                  上一版分开在窗口上下两端的两条（46px + 82px）已经合成它。
+   *                  底栏整个取消，正文因此多出 82px（274px 窗口里的 30%）。
+   *   `--t-collapse` 收起 / 展开的动画时长。
+   *                  ★ 它是**唯一源**：`TopBar::toggleCollapse` 会读它，据此决定
+   *                  "等动画播完再改窗口高度"。前端另写死一份的话，谁调了这里、
+   *                  忘了改那里，窗口就会在正文滑完之前先变矮 ——
+   *                  用户看到的是"被裁掉"而不是"滑走"，而且不报任何错。
+   *
+   * 稿件区的内边距从这些数推出来（见 `.viewport`）。
+   *
+   * ★ `--h-cb` 保留、但恒为 0：底栏已经不存在了。留它的原因是
+   *   `scripts/verify-click-through.py --expect-bars` 会读这个变量来算期望区间，
+   *   读空会算出一段假区间。写一个诚实的 0，那个脚本就自动跟着新版面走。 */
+  --h-top: 46px;
+  --h-cb: 0px;
+  --t-collapse: 180ms;
+
+  /* 设置面板的分隔线缩进 —— Apple 的分隔线**不是通栏的**，
+   * 它从文字左边缘起（对齐内容），不通到卡片右边缘。
+   * 这一条是"像不像苹果"最明显的分界线。 */
+  --row-pad: 12px;
+}
+
+/* 浅色主题。
+ *
+ * 只覆盖颜色，不动结构 —— 结构（玻璃在哪一层、圆角多大）是场景决定的，
+ * 换主题不该改变它们。 */
+:root[data-theme="light"] {
+  --bg: 246 247 250;
+  --panel: 252 252 254;
+  --panel-2: 238 240 245;
+  /* 浅色下卡片走「纯白浮在灰底上」，而不是靠描边 —— 和深色同一个思路。 */
+  --card: 255 255 255;
+  --card-hi: 240 242 247;
+  --hair: 0 0 0;
+  --fg: 24 28 35;
+  --fg-dim: 92 100 112;
+  --fg-faint: 138 146 158;
+  --accent: 37 99 235;
+  --ok: 5 150 105;
+  --warn: 180 118 6;
+  --err: 220 38 38;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  /* 窗口是 transparent 的，这里必须保持透明，否则窗口会变成一块不透明的黑板 */
+  background: transparent;
+  color: rgb(var(--fg));
+  font-family: "PingFang SC", "Microsoft YaHei UI", "Microsoft YaHei",
+    -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  overflow: hidden;
+  user-select: none;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ---------------------------------------------------------------- 外壳 */
+
+.app {
+  position: relative;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  /* 整体不透明度由设置页调节：调到 0.6 左右可以透看后面的 PPT */
+  background: rgb(var(--bg) / var(--win-alpha));
+  border: 1px solid rgb(var(--fg) / 0.08);
+  border-radius: var(--r-outer);
+  overflow: hidden;
+}
+
+/* 收起态：只剩那一条栏。
+ *
+ * ★★ 这里**以前收的是两条**：`.controlbar`（底部控制台）连同长在它里面的
+ *   那颗「展开」键一起被收成 0 高。于是收起之后窗口上没有任何可见的展开入口，
+ *   只剩"记住 Ctrl+Alt+M"这一条路 —— 那颗键长在被收起的东西里面，
+ *   这是个真 bug，不是"少做了个功能"。现在唯一的栏一直留着，展开键在它右端。
+ *
+ * ★ 稿件区收成 0 高而不是 `display: none` —— 后者会丢掉滚动位置，
+ *   展开后用户会看到稿子开头而不是刚才念到的地方。 */
+.app.collapsed {
+  border-radius: var(--r-outer);
+}
+
+.app.collapsed .viewport {
+  flex: 0 0 0;
+  height: 0;
+  min-height: 0;
+  padding: 0;
+  margin: 0;
+  border: 0;
+  overflow: hidden;
+}
+
+/* 「正在收起」的那一拍：窗口还没变矮，正文先滑上去淡出。
+ *
+ * ★ 它与 `.collapsed` 共用同一套视觉，差别只在窗口高度改没改 ——
+ *   两者同时为真时窗口已经变矮，那时候再谈"滑"就没意义了（内容已被裁掉）。
+ *   时序见 `TopBar::toggleCollapse`：播完这一拍才去动窗口。 */
+.app.collapsing .viewport,
+.app.collapsed .viewport {
+  opacity: 0;
+  transform: translateY(-12px);
+  pointer-events: none;
+}
+
+.app.collapsed .topbar {
+  position: static;
+  border-bottom: none;
+  height: var(--h-top);
+}
+
+/* ------------------------------------------------- 「栏悬浮」的两种形态
+ *
+ * 这个开关就是用户要的那个「固定」。两种形态都保证
+ * **栏不随正文滚动**（它不是滚动容器的子元素），差别在占不占地方：
+ *
+ *   悬浮（默认，`.app` 不带 `bar-inline`）：
+ *     栏浮在正文**之上**，正文从它下面滚过去。代价是首行会被盖住一点，
+ *     所以稿件区要按栏高留内边距 —— 玻璃也因此才有东西可采样。
+ *
+ *   不悬浮（`.app.bar-inline`）：
+ *     栏占独立一行，正文从它**下面**开始，互不重叠。
+ *     适合"窗口本来就小、一行都不能被挡"的场合；代价是栏背后没有内容可采，
+ *     玻璃自动退化为实色。
+ *   ★ 这一种正好就是「正文从栏的下面开始」—— 上一版它是"两种形态之一"，
+ *     现在它就是那条唯一栏的另一种呈现方式，不再牵扯第二条栏。
+ */
+.app.bar-inline .topbar {
+  position: static;
+  border-radius: 0;
+  background: rgb(var(--bg) / 0.98);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  /* 不悬浮时是两层实色（栏 / 正文），必须有分界线，否则会糊成一块。 */
+  border-bottom: 1px solid rgb(var(--hair) / 0.07);
+}
+
+/* 不悬浮时正文从栏**下面**开始，所以这里只让出栏本身的高度。 */
+.app.bar-inline .viewport {
+  padding-top: 14px;
+  padding-bottom: 45vh;
+}
+
+/* ---------------------------------------------------------------- 导航层玻璃 */
+
+/* 那条栏浮在稿件之上，稿件从它下面滚过去。
+ * 这样才有东西可给 `backdrop-filter` 采 —— 否则它背后只是一层纯色，
+ * 玻璃等于没做，还白白多一次每帧采样。 */
+.topbar,
+.history,
+.findbar,
+.drawer-head {
+  background: rgb(var(--bg) / 0.72);
+  backdrop-filter: blur(18px) saturate(140%);
+  -webkit-backdrop-filter: blur(18px) saturate(140%);
+}
+
+/* 性能兜底：这个窗口同时在做透明合成 + 长期置顶 + 实时语音识别，
+ * 会议场合绝不能为观感掉帧。关掉只损失质感，不影响任何功能。 */
+:root.no-glass .topbar,
+:root.no-glass .history,
+:root.no-glass .findbar,
+:root.no-glass .drawer-head {
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  background: rgb(var(--bg) / 0.96);
+}
+
+/* ---------------------------------------------------------------- 顶栏 */
+
+.topbar {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 10;
+  height: var(--h-top);
+  display: flex;
+  align-items: center;
+  /* ★ 这一行现在装着十几件事（隐身灯 / 标题 / ‹⏸› / 位置 / 进度条 / 状态槽 /
+   *   5 个图标），间距从 6px 收到 4px、再收到 3px，右内边距从 8px 收到 5px ——
+   *   省下来的每一个像素都是给标题和进度条的（实测它俩是这一行里唯一被压的）。
+   *
+   * ★★ 但它俩最终能分到多少，**只由上面那些定宽元素的总和决定**
+   *   （标题 + 进度条 = 行宽 − 定宽 − 间距 − 内边距 = 145px，实测）：
+   *   比例、`flex-grow`、`min-width` 都改不动这个总数，只能改两者怎么分。
+   *   所以"给标题让地方"唯一的办法是**把定宽的东西改小**，见下面的 `.icon-btn`。 */
+  gap: 2px;
+  padding: 0 5px 0 10px;
+  border-bottom: 1px solid rgb(var(--fg) / 0.07);
+  border-radius: var(--r-outer) var(--r-outer) 0 0;
+}
+
+/* ★ 已删除：`.tray-hint` 那一整块（浮层 / `th-title` / `th-note` / `@keyframes th-in`）。
+ *
+ * 它是「收进任务栏」那颗按钮的配套浮层 —— 那颗按钮从顶栏搬进设置之后，
+ * 浮层也跟着没了：新做法是**走全局 toast**（见 `SettingsDrawer::sendToTaskbar`）。
+ *
+ * ★★ 删它的同时必须确认**那句话还有别处接着说** ——
+ *   「窗口去哪了、怎么叫回来」这条信息不能跟着 CSS 一起消失，
+ *   否则窗口一藏、用户什么都看不见，而代码不报任何错（本项目最忌讳的那种失败）。
+ *   承接它的是 `.toast`（下面），验收项是桩里的 `taskbarToast=`。
+ */
+
+.topbar .title {
+  /* ★ 从 `0 1 auto` 改成 `1 1 auto`：以前标题是"按内容占宽、不够就压"，
+   *   现在它要和进度条**平分**这一行剩下的弹性宽度。
+   *   不 grow 的话，剩余宽度会被进度条整吃掉、标题反被压没。 */
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 12px;
+  color: rgb(var(--fg-dim));
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 顶栏里的图标按钮比别处**小一号**（30 而不是 32）。
+ *
+ * ★★ 为什么值得为这 2px×5 单独写一条：这一行能分给「标题 + 进度条」的总宽
+ *    = 行宽 − 定宽元素 − 间距 − 内边距。实测 560px 窗口下那个总数只有 **145px**，
+ *    而它俩都不够用（标题要 116 才放得下"2026 上半年经营汇报"，进度条下限 52）。
+ *    比例、`flex-grow`、`min-width` 都改不动这个总数，**只能把定宽的做小**。
+ *    5 颗各让 2px = 10px 全归标题，够多认一个字。
+ *
+ * ★ 只作用于顶栏（`.topbar .icon-btn`）—— 查找浮层、稿件面板、设置抽屉里的
+ *   同名按钮仍是 32px，那几处不缺横向空间，缩小只会让点击变难。
+ *
+ * ★ 46px 的行里放 30px 的按钮，上下各留 8px，鼠标容错仍然够。
+ */
+.topbar .icon-btn {
+  width: 30px;
+  height: 30px;
+}
+
+/*
+ * ★ 阈值本轮**升到 540px** —— 这是"一行装完全部控件"的另一面代价，写清楚：
+ *
+ * 这一行现在是「状态灯 + 标题 + ‹⏸› + 位置 + 进度条 + 状态槽 + 5 个图标」，
+ * 定宽项实测约 352px（灯 74 + 推进 96 + 位置 32 + 图标 5×30），
+ * 弹性项只剩标题和进度条两个。
+ *
+ * ★★ 560px（默认宽，也是最小宽）下标题**放不下全名**，会被省略号截断：
+ *    实测内容要 116px、只拿到约 103px。这不是没调好，是"一行装完"的必然结果 ——
+ *    全名还有三处可看：悬停这个元素（`title` 属性）、「稿件」浮层、以及正文本身。
+ *    窗口拉宽一点它自己就完整了。
+ *
+ * 这个 540px 是保底：到了那个尺寸，选择回到"够宽就显示、不够宽就整个不显示"，
+ * 而不是让它被挤成 "2026…" 那样一小截 —— 那既没告诉你这是哪篇稿子，
+ * 又显得界面没做完，比不显示更糟。
+ */
+@media (max-width: 540px) {
+  .topbar .title {
+    display: none;
+  }
+}
+
+/* 隐身状态灯：整条栏里唯一允许有颜色的常驻元素。
+ * 它是整个产品最需要"一眼确认"的状态 —— 开会前扫一眼就够了。 */
+.st-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 26px;
+  /* ★ 左右各 8px（原 9px）：这是这条栏里最"虚"的 1px×2 ——
+   *   胶囊里"盾牌 + 3 个字"自己就留了视觉呼吸，收 1px 看不出来，
+   *   而它俩会原样落到标题上（这一行唯一被压的就是标题和进度条）。 */
+  padding: 0 8px;
+  border-radius: var(--r-pill);
+  font-size: 11.5px;
+  letter-spacing: 0.02em;
+  border: 1px solid transparent;
+  cursor: pointer;
+  flex: 0 0 auto;
+  transition: background var(--t-fast) ease;
+}
+
+.st-pill svg {
+  display: block;
+  flex: 0 0 auto;
+}
+
+.st-pill.on {
+  color: rgb(var(--ok));
+  background: rgb(var(--ok) / 0.1);
+  border-color: rgb(var(--ok) / 0.25);
+}
+
+.st-pill.off {
+  color: rgb(var(--fg-faint));
+  background: rgb(var(--fg) / 0.05);
+  border-color: rgb(var(--fg) / 0.1);
+}
+
+.st-pill.warn {
+  color: rgb(var(--warn));
+  background: rgb(var(--warn) / 0.1);
+  border-color: rgb(var(--warn) / 0.25);
+}
+
+/* 「已暂停」用强调色（蓝），**不用**警告色（琥珀）。
+ * 暂停是用户自己按下去的、是正常操作，不是出了问题 ——
+ * 琥珀要留给"系统受限 / 没生效"那种需要处理的状况。
+ * 同一块界面上，一个颜色只能有一个意思。 */
+.st-pill.paused {
+  color: rgb(var(--accent));
+  background: rgb(var(--accent) / 0.12);
+  border-color: rgb(var(--accent) / 0.3);
+}
+
+/* 「开启中」：一道光从左扫到右。
+ * 用它而不是转圈 spinner —— 胶囊是扁的、宽度固定，扫光在视觉上就是
+ * "正在接通"，而且不改变布局（不必为动画留额外宽度）。 */
+.st-pill.starting,
+.hero-btn.starting {
+  position: relative;
+  overflow: hidden;
+  color: rgb(var(--ok));
+  background: rgb(var(--ok) / 0.07);
+  border-color: rgb(var(--ok) / 0.3);
+}
+
+.st-pill.starting::after,
+.hero-btn.starting::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    rgb(var(--ok) / 0.38),
+    transparent
+  );
+  animation: pill-scan 1.05s linear infinite;
+  pointer-events: none;
+}
+
+@keyframes pill-scan {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(100%);
+  }
+}
+
+/* 确认生效时让盾牌**呼吸** —— 不用盯着看也知道状态是活的。
+ * 用图标自己的明度而不是再加一个色点：盾牌本身就是那个点。 */
+.st-pill.on svg {
+  animation: pulse 2.4s ease-in-out infinite;
+}
+
+/* 切换中让呼吸快一点：慢呼吸读起来是"稳定"，快脉冲才是"正在变" */
+.st-pill.starting svg {
+  animation: pulse 0.72s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.45;
+  }
+}
+
+/* ---------------------------------------------------------------- 主角
+ *
+ * 顶栏正中间那颗大圆按钮。整块界面上它是**唯一**的：
+ *   唯一实心图标、唯一圆形按钮、唯一一个明显大于邻座的尺寸（36px，
+ *   而两边的图标按钮是 32px 的方形）。
+ * 三件事加起来，视线落到这条栏上时"从哪开始"就没有第二种答案。
+ *
+ * 它取代了改版前的两个入口 —— 顶栏那个「▶ 演示」文字胶囊，
+ * 和藏在设置 › 语音识别 › 第 7 行的「开始识别」。那其实是**同一个意图**
+ * （"我要开始讲这段稿子"），两个入口只会让用户分不清差别、而且状态会不同步。
+ *
+ * ★★ 颜色的意思（全界面一个颜色只有一个意思）：
+ *
+ *     绿（描边）= 就绪，等你按        ⇒ 未开始
+ *     绿（实心）= 正在跑              ⇒ 提词中
+ *     蓝（描边）= 用户自己按下的状态    ⇒ 已暂停
+ *
+ *   "绿 = 一切正常（生效或就绪）"与顶栏那盏灯同义，所以两处同时绿不算撞色；
+ *   **实心 / 描边**是"在跑"与"就绪"的唯一区别 —— 这也是为什么这两个态
+ *   绝不能同色同形：第一版把「未开始」和「已暂停」都做成了蓝色描边 + ▶，
+ *   离线一量才发现两者**完全一样**（`hero=paused` 与 `hero=` 的
+ *   border/color 逐字节相同），用户根本分不出"还没开始"和"按停了"。
+ *
+ *   琥珀在这里**一次都不出现** —— 它不是"暂停"，它是"受限 / 没生效"，
+ *   那类事由顶栏那盏灯和它末尾那个状态槽承载。
+ */
+.hero-btn {
+  position: relative;
+  /* ★ 从 50px 收到 36px：它原来独占窗口底部那条栏、是屏幕上一等一的大；
+   *   现在并进了 46px 高的那一行，上下各留 5px。
+   *   即便缩了，它仍是这一行里**最大的**元素（图标按钮 32px）——
+   *   "从哪开始"的线索还得靠它。 */
+  width: 36px;
+  height: 36px;
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  border: 1.8px solid rgb(var(--ok) / 0.55);
+  background: rgb(var(--ok) / 0.1);
+  color: rgb(var(--ok));
+  cursor: pointer;
+  transition: background var(--t-base) ease, color var(--t-base) ease,
+    border-color var(--t-base) ease, transform var(--t-fast) ease;
+}
+
+.hero-btn svg {
+  display: block;
+}
+
+.hero-btn:hover {
+  background: rgb(var(--ok) / 0.2);
+}
+
+/* 按压反馈：位移 1px + **轻微内缩**。
+ *
+ * ★ 这里与图标按钮刻意不同：图标按钮不缩放（一排会抖），但主角按钮是**孤零零
+ *   一个圆**，没有邻居会被带着抖。一个圆的"按下去"如果只有 1px 位移，
+ *   在 46px 的圆上几乎看不见 ⇒ 加 `scale(0.96)` 让它"陷进去"。
+ * ★ 时长取 `--t-press`，且**回弹用 `--ease-back`**：抬起时那一点点过冲
+ *   正是"按感"的来源（Uiverse 的元素几乎都带这一下）。
+ *   过冲量必须小 —— 这里的位移只有 4% 缩放，过冲后约 1.6px，是"弹"不是"甩"。
+ */
+.hero-btn:active {
+  transform: translateY(1px) scale(0.96);
+  transition-duration: var(--t-press);
+}
+
+/* 进行中：**实心绿**。实心读作"正在用力做事" —— 正是它此刻的样子，
+ * 也是这条栏上唯一该被一眼认出的状态。 */
+.hero-btn.on {
+  color: #08130d;
+  background: rgb(var(--ok) / 0.95);
+  border-color: rgb(var(--ok));
+}
+
+.hero-btn.on:hover {
+  background: rgb(var(--ok));
+}
+
+/* 已暂停：蓝色描边，**不做实心** —— 实心读作"正在做事"，
+ * 而暂停恰恰是"此刻不在做事"。 */
+.hero-btn.paused {
+  color: rgb(var(--accent));
+  background: rgb(var(--accent) / 0.14);
+  border-color: rgb(var(--accent) / 0.55);
+}
+
+/* 「就位中」**不加半透明**：半透明在这个界面里读作"不可用 / 被禁用"，
+ * 而它恰恰是"正在做事" —— 两个意思正好相反。
+ * 扫光已经在表达进行中了（见上面 `.hero-btn.starting::after`）。 */
+.hero-btn.starting {
+  cursor: progress;
+}
+
+/* 收音呼吸环。
+ *
+ * `--mic`（0..1）由组件按 `asrLevel` 写进 style，这里只管把它画出来。
+ * ★ 为什么把电平并进主角而不是在角落另挂一根小竖条：
+ *   "麦克风到底有没有在收音"是这根按钮上最该被确认的一件事，
+ *   而挂在小角落里的竖条没人会去看。并进来，它就跟"正在提词"
+ *   共享同一个视线焦点 —— 零成本确认。
+ * ★ 只在 `on`（真正在跑）时出现：没在跑的时候画一个环，
+ *   会让"到底开没开"这件事变得更难判断。
+ * ★ 这里的 `0.08s linear` 是**刻意不复用 token** 的：它跟的不是"某次交互"，
+ *   而是麦克风的电平采样（每帧都可能变）。用 140ms 会让环跟不上声音、
+ *   看起来像在滞后地飘。凡是"跟着连续信号走"的过渡都该是这种极短 linear。 */
+.hero-btn.on::before {
+  content: "";
+  position: absolute;
+  inset: -5px;
+  border-radius: 50%;
+  border: 2px solid rgb(var(--ok) / calc(0.12 + var(--mic, 0) * 0.78));
+  transform: scale(calc(1 + var(--mic, 0) * 0.05));
+  transition: border-color 0.08s linear, transform 0.08s linear;
+  pointer-events: none;
+}
+
+
+/* ---------------------------------------------------------------- 按钮 */
+
+/* 热区 32px：会议中手忙，按钮太小会误点。
+ * 形状是圆角矩形（Apple：小控件用圆角矩形，大控件才用胶囊）。
+ *
+ * 从 28px 放大到 32px 是跟着顶栏一起长的 —— 顶栏高 46px，留 7px 上下留白。 */
+.icon-btn {
+  width: 32px;
+  height: 32px;
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: var(--r-ctrl);
+  background: transparent;
+  color: rgb(var(--fg-dim));
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 1;
+  transition: background var(--t-fast) ease, color var(--t-fast) ease,
+    transform var(--t-fast) ease;
+}
+
+/* 图标是内联 SVG（见 components/Icons.tsx）。
+ * `display: block` 去掉 inline 元素自带的行基线空隙 —— 不去掉的话，
+ * 32px 的按钮里图标会偏上两三像素，一排按钮看着歪。
+ * 图标尺寸由组件传 width/height，**不受 font-size 影响**，这正是不用字形的理由。 */
+.icon-btn svg {
+  display: block;
+  flex: 0 0 auto;
+}
+
+.icon-btn:hover {
+  background: rgb(var(--fg) / 0.1);
+  color: rgb(var(--fg));
+}
+
+/* 按压反馈：位移 1px + 略暗。
+ * ★ 不做缩放：一排 32px 按钮里，缩放会让整排看起来在抖（同一行里相邻的按钮
+ *   会各自胀缩，产生"波纹"错觉）。
+ * ★ 时长单独取 `--t-press`（90ms）而不是 `--t-fast`：这颗按钮的反馈必须在
+ *   **手指按下去的那一瞬**就到，晚一点用户会以为没按上，于是再按一次。 */
+.icon-btn:active {
+  background: rgb(var(--fg) / 0.16);
+  transform: translateY(1px);
+  transition-duration: var(--t-press);
+}
+
+.icon-btn.active {
+  background: rgb(var(--accent) / 0.16);
+  color: rgb(var(--accent));
+}
+
+.icon-btn.danger:hover {
+  background: rgb(var(--err) / 0.16);
+  color: rgb(var(--err));
+}
+
+/* 键盘焦点环。
+ *
+ * ★ 用 `:focus-visible` 而不是 `:focus`：`:focus` 在**鼠标点击后**也会亮，
+ *   于是"我用鼠标点了一下，圈还挂着"—— 那是十年前的观感。
+ *   `:focus-visible` 由浏览器判断"这次交互是不是键盘来的"，只有键盘才亮。
+ *
+ * ★ 用 `outline` 而不是 `box-shadow` 描边：outline **不占布局**、跟随
+ *   `border-radius`，而且不会被父级 `overflow:hidden` 裁掉。本项目窗口很紧
+ *   （560px 里塞了整条顶栏），用 box-shadow 会在窄处被裁。
+ *
+ * ★ 颜色用 `--accent`（蓝）＝"用户自己按的" —— 与项目既定的颜色语义一致
+ *   （绿=已生效/琥珀=受限/蓝=用户操作）。
+ */
+.icon-btn:focus-visible,
+.btn:focus-visible,
+.seg-btn:focus-visible,
+.tb-step:focus-visible,
+.switch:focus-visible,
+.dot:focus-visible,
+.grp-h.foldable:focus-visible,
+.grp-row.tap:focus-visible,
+.history-item:focus-visible,
+.sentence:focus-visible {
+  outline: 2px solid rgb(var(--accent) / 0.85);
+  outline-offset: 2px;
+}
+
+
+/* ---------------------------------------------------------------- 正文 */
+
+.viewport {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  overflow-x: hidden;
+  /* 上下要按浮在稿件之上的那一层让出空间，否则首末行会被压住：
+   *   上 = 那条栏（`--h-top`）；
+   *   下 = 0（底栏已经取消，`--h-cb` 恒为 0）。
+   *
+   * 底部那一大段 45vh 是刻意的：没有它，最后几句永远滚不到锚点位置，
+   * 读到最后会卡住不动。数值刻意保持与搬家前完全一致，
+   * 免得"最后一句能否滚到锚点"这件事跟着被改掉。 */
+  padding: calc(var(--h-top) + 14px) var(--pad-x) calc(var(--h-cb) + 45vh);
+  scroll-behavior: smooth;
+  /* ★ 收起/展开时正文的"滑出 / 滑入"全靠这两行 —— 配合
+   *   `TopBar::toggleCollapse` 的两拍时序（收：先播完这段过渡，再改窗口高度；
+   *   展：先放开窗口，让这段过渡自己播）。时长取自 `--t-collapse`，唯一源。 */
+  transition: opacity var(--t-collapse) var(--ease),
+    transform var(--t-collapse) var(--ease);
+}
+
+/* 分光镜模式：稿件左右翻转，透过玻璃看就是正的 */
+.viewport.mirror {
+  transform: scaleX(-1);
+}
+
+.para {
+  margin: 0 0 16px;
+  /* 歌词式的层次：离当前段落越远，字号越小、越淡。
+   * 距离由组件给出（`--dist`，0..3，已在组件里封顶）。
+   *
+   * ★ 字号用 `font-size` 而不是 `transform: scale()`：
+   *   scale 不重排（零抖动）很诱人，但它把文字**位图放大** ——
+   *   在 1.0x 附近的小倍率下，中文字的边缘会先糊掉。
+   *   提词器的第一要务是"下几个字看得清"，宁可要一次平滑的重排，
+   *   也不要一张糊掉的字。抖动由 `transition` 兜着，
+   *   而且只有**跨段落**换句时才会动一次。
+   *
+   * ★ 衰减系数刻意收得比较克制（字号 0.075/档、透明度 0.13/档）：
+   *   这是**提词器**不是歌词播放器 —— 远处的字仍然是要念的，
+   *   淡过头会让"往下扫一眼"变成一件需要费力的事。 */
+  font-size: calc(var(--fs) * (1.08 - var(--dist, 0) * 0.075));
+  line-height: var(--lh);
+  letter-spacing: var(--ls);
+  text-align: var(--align);
+  color: rgb(var(--fg));
+  opacity: calc(1 - var(--dist, 0) * 0.13);
+  /* 跨段落推进时的字号/透明度渐隐。
+   *
+   * ★★ 这一条**提词中必须留着** —— 它不属于"装饰性动效"那一类，
+   *   它正是"念到哪了"的指示本身（判据见 styles.css 末尾的动效总策略①）。
+   * ★ 曲线用手写的 `ease` 而不是 `--ease`：这个渐变跟的是**语速**，
+   *   不跟某次点击。`--ease` 那条较陡的曲线在这里会让字"啪"地一下跳到位；
+   *   `ease` 的对称缓入缓出读起来才像"焦点在移动"。
+   * ★ 0.32s 略超 250ms 是**有意**的：它必须比一次按钮反馈慢，
+   *   否则用户还没念完这句、下一句的淡入已经抢上来了（会看串行）。 */
+  transition: color var(--t-base) ease, font-size 0.32s ease, opacity 0.32s ease;
+}
+
+/* 已读段落整体退场 —— 靠明度差而不是颜色差，
+ * 余光扫过时"读到哪"这件事不需要辨认颜色。
+ *
+ * ★ 从 `--fg-faint` 收到 `--fg-dim` 一档（本轮改的）：段落现在另外还有一层
+ *   "按距离变淡"。两层叠满时，已读的远段落会暗到几乎看不见 ——
+ *   而它恰恰承担着"刚才讲到哪"的回看价值（往回翻是真实需求，
+ *   `MANUAL_HOLD_MS` 那套手动接管就是为它做的）。 */
+.para.read {
+  color: rgb(var(--fg-dim));
+}
+
+/* 句子的悬停反馈留着 —— 它是"这一句"最细粒度的提示。
+ * 但**光标形状跟着实际命中区走**：命中区已经挪到整个段落（含行距与行尾空白），
+ * 光标只在字形上变成手型，等于继续告诉用户"行距那儿点不动"。
+ * 所以 `cursor` 挂到 `.para` 上，且只在「快捷跳读」开着时（关掉时单击不响应）。 */
+.sentence {
+  border-radius: 3px;
+  transition: background var(--t-fast) ease;
+}
+.viewport.quick .para {
+  cursor: pointer;
+}
+
+.sentence:hover {
+  background: rgb(var(--fg) / 0.05);
+}
+
+.sentence.current {
+  /* 当前句：左侧竖条 + 极淡底色。
+   * 竖条**留着**（歌词里没有它）：歌词一句就是一个独立区块，
+   * 而稿件是一整块连续的正文 —— 在一段很长的段落里，
+   * 没有竖条就不好找"从哪个字开始是正在念的"。 */
+  background: rgb(var(--read) / 0.06);
+  box-shadow: -10px 0 0 -7px rgb(var(--read));
+}
+
+/* ---- 卡拉OK三段：已唱实、未唱淡、正在唱的那个字最亮 ---- */
+/*
+ * ★ 与上一版**整个反过来**了：上一版是"整句亮、读过的压暗"
+ *   （记录历史）；现在是"整句淡、唱过的提亮"（指示接下来读哪儿）。
+ *   讲者盯的始终是还没念的那几个字，余光需要的是"亮到哪儿了"的界线。
+ *
+ * ★ 但"未唱淡"只降**一档**（`--fg-dim`），不降到 `--fg-faint`：
+ *   这是提词器与歌词播放器的重要分歧 —— 歌词可以把它压得很淡
+ *   （反正下一行马上就亮），而提词器里"还没念的那半句"是讲者
+ *   下一秒要看的字，压过头就等于把稿子擦掉了。 */
+.sentence.current .sung {
+  color: rgb(var(--fg));
+}
+
+.sentence.current .unsung {
+  color: rgb(var(--fg-dim));
+}
+
+/* 正在唱的那个字：同时提亮到跟读色、并压一道短脊。
+ * 保留这个"播放头"也是与歌词的分歧点 —— 歌词不必告诉你唱到哪个字，
+ * 提词器必须（下一句可能要等三秒才开始）。 */
+.sentence.current .singing {
+  color: rgb(var(--read));
+  border-bottom: 2px solid rgb(var(--read));
+}
+
+/* ---------------------------------------------------------------- 空态 */
+
+.empty {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  color: rgb(var(--fg-faint));
+  font-size: 13px;
+  text-align: center;
+  padding: 0 40px;
+}
+
+.empty .big {
+  font-size: 15px;
+  color: rgb(var(--fg-dim));
+}
+
+.empty .hint {
+  font-size: 12px;
+  line-height: 1.9;
+}
+
+.empty kbd {
+  font-family: ui-monospace, "SF Mono", Consolas, monospace;
+  font-size: 11px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: rgb(var(--fg) / 0.07);
+  border: 1px solid rgb(var(--fg) / 0.1);
+  color: rgb(var(--fg-dim));
+}
+
+/* -------------------------------------------------- 那一条栏里的推进组
+ *
+ * ★★ 本轮改版：它从**窗口底部的一条两行控制台**并进了顶栏那一行。
+ *
+ * 为什么改：底栏是 82px，在 560×274 的窗口里吃掉 **30%** 的高度，
+ * 而它一行里只有三个元素（上一句 / 主角 / 下一句），左右两侧**全是空的**。
+ * 参考图给的答案是"全部压进一条栏"，于是底栏整个取消、
+ * 推进组变成那一行里的一段（结构见 `Transport.tsx`）。
+ *
+ * ★ 主角按钮因此从"屏幕底部中央"挪到了"栏目中偏左"。代价是真的
+ *   （手不必抬那么远、视线不必下移的好处没了），换来的是 82px 正文 ——
+ *   在 274px 高的窗口里这笔账是划算的。
+ */
+.tb-transport {
+  display: flex;
+  align-items: center;
+  /* 1px：这三个是一组，挨紧一点才读得出"它们是一件事"。
+   * ★ 从 2px 收到 1px 是为了把最后那 2px 让给标题 ——
+   *   实测标题就差 0.5px 放不下（`titleShort=0.5`，浏览器已经在挂省略号了），
+   *   而这一行里只有标题和进度条能被压，能省的固定像素都在它们身上。 */
+  gap: 1px;
+  flex: 0 0 auto;
+}
+
+/* 位置读数。字号比正文小两号 —— 它是"我在哪"的坐标，
+ * 不是给人盯着读的数；真要精确跳到某处，拖那条进度条更快。 */
+.tb-pos {
+  flex: 0 0 auto;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  color: rgb(var(--fg-faint));
+  letter-spacing: -0.3px;
+}
+
+/* 状态槽 —— 一个位置，**几个**生产者，按优先级依次占用（见 Transport 的 `statusLine`）。
+ * ★ 这就是「这一行只能有一个意思」那条纪律的实现：
+ *   不是把几件事并排挤成一小堆（改版前就是那样），而是让更要紧的那个把位置占掉。
+ *
+ * ★★ 两处是**本轮改的**，两处都是"警告不能被压没"的落实：
+ *
+ *   1. `flex` 从 `0 1 auto` 改成 `0 0 auto` —— 它现在**不收缩**。
+ *      改之前实测过：同一条「麦克风异常」标签被压成「麦克风异…」，
+ *      而**行还有富余**（进度条仍占着 52px 的下限）。那种截断最坏的地方是
+ *      它看起来像"这软件就爱写半句话"，不像故障 —— 而它恰恰是警告。
+ *      改完之后，位置不够时让位的顺序变成：标题 → 进度条（到 52px 为止）。
+ *
+ *   2. `max-width: 52%` —— 不收缩之后必须给个上限，
+ *      否则一条长 `ERROR`（后端原样透传的句子）能把标题和进度条整个挤出去。
+ *      上限之外的部分由里面那个 `.tb-status-tx` 出省略号。
+ *
+ * ★ 没话可说时组件整个不渲染（不是渲染一个空槽）：
+ *   顶栏这一行比原来的底栏窄得多，一个空占位的槽会直接从进度条嘴里抢走 60px。
+ *   代价是"剩余时间"不能再常显 —— 它挪进了进度条的悬停说明。 */
+.tb-status {
+  flex: 0 0 auto;
+  max-width: 52%;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  color: rgb(var(--fg-dim));
+  font-size: 11px;
+}
+
+/* 会被截断的那一半（长错误串）—— 省略号只出在这里。 */
+.tb-status-tx {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 「这一格能点」。★ 它**不参与截断**：长错误把文字吃掉之后，
+ * 这个小箭头是这一格里唯一还能说明"点我"的东西 —— 它必须还在。 */
+.tb-status-go {
+  flex: 0 0 auto;
+  font-size: 13px;
+  line-height: 1;
+  opacity: 0.65;
+}
+
+/*
+ * ★★ 「那一格有话说 / 有控件时，标题整块退场」。
+ *
+ * 560px 宽的一行里塞不下 标题 + 进度条 + 再一件东西 ——
+ * 而"再一件"无论是警告还是调速条，都比标题更要紧：
+ *   * 警告是"必须现在看"的（标题是"我在念哪份稿"，用户自己刚打开的那份他会不知道吗）；
+ *   * 调速条只在**匀速滚动正在跑**时出现，那一刻用户的眼睛在正文上，
+ *     而他正盯着这条栏看的是"走到哪了、要不要加速"。
+ * 不写这条的话，flex 会把几边都按比例压一压，**每边都残废**（实测见下）。
+ *
+ * ★ 两个状态都实测过（560×274，`--measure`）：
+ *   * 有警告：标题 0（本规则）/ 若不让位则与警告双双被压
+ *   * 匀速滚动运行中（`.tb-speed` 在）：标题 **60px、`titleShort=55.7`**
+ *     —— 也就是只剩 "2026…" 这么一小截，正是本项目明令禁止的那种碎片
+ *     （"既没告诉你这是哪篇稿子，又显得界面没做完，比不显示更糟"）。
+ *     让位之后这 116px 全给进度条与调速条，两条都变得能用。
+ *
+ * ★★ 这条规则 2026-09-27 改过一次：原先**只**认 `.tb-status`，理由写的是
+ *   "调速条是正常控件，凭什么让标题消失"。那个判断是在**假图上**做的 ——
+ *   当时预览工具让截图比真实窗口宽 32px（见 `scripts/ui-preview.py` 的
+ *   `run_browser`），于是以为标题还能剩 90px。修掉工具后实测只有 60px。
+ *   ⇒ 判据不变（标题让位），变的只是"再一件"包括谁。
+ *
+ * ★ WebView2 与本地预览用的 Edge 都是常青版，`:has()` 可用（Chrome 105+）。
+ */
+.topbar:has(.tb-status) > .title,
+.topbar:has(.tb-speed) > .title {
+  display: none;
+}
+
+.tb-status.warn {
+  color: rgb(var(--warn));
+}
+
+.tb-status.err {
+  color: rgb(var(--err));
+}
+
+/* 「已讲完」—— 匀速滚动滚到底之后引擎自己停住了，这不是出错，所以用正常色。
+ * ★ 它必须与"什么也没发生"分开：光标停在 1.0 而大圆按钮还写着"提词中"的话，
+ *   用户会以为卡住了，然后去重启一个本来好好的功能。 */
+.tb-status.ok {
+  color: rgb(var(--ok));
+}
+
+/* 匀速滚动的调速条。
+ * ★ 它**占的是状态槽那一格**（状态槽让位），不是额外挤进来的元素 ——
+ *   这一行在 560px 宽的窗口里本来就紧，再添一格会把进度条压没。
+ *   两者回答的又是同一个问题（"还要讲多久"），在同格上轮换是合理的。
+ * ★ 它是**开讲中唯一能调速的地方**：设置页那根滑杆要打开抽屉、
+ *   352px 宽会盖掉半张稿子，讲的过程中根本来不及用。 */
+.tb-speed {
+  flex: 0 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.tb-speed input[type="range"] {
+  /* 窗口窄了让它缩，但不小于 48px；宽了就停在 96px，不跟进度条抢地方。 */
+  flex: 0 1 96px;
+  min-width: 48px;
+  height: 14px;
+}
+
+.tb-speed .cbs-val {
+  flex: 0 0 auto;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: rgb(var(--fg-dim));
+  white-space: nowrap;
+}
+
+/* 上一句 / 下一句。
+ * ★ 它们是**完整可用的另一条路**，不是"自动跟读的降级" ——
+ *   语音跟不准、或者用户就是不想开麦时，手动翻句要能撑起整场。
+ *   所以它们留在主界面上（主角两侧），而不是收进设置。
+ * ★ 28px：比图标按钮（32px）小一号、比主角（36px）小两号，
+ *   一眼就能排出"哪个是主要的"。 */
+.tb-step {
+  width: 28px;
+  height: 28px;
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  border: 1px solid rgb(var(--fg) / 0.1);
+  background: rgb(var(--fg) / 0.03);
+  color: rgb(var(--fg-dim));
+  cursor: pointer;
+  transition: background var(--t-fast) ease, color var(--t-fast) ease,
+    transform var(--t-fast) ease;
+}
+
+.tb-step svg {
+  display: block;
+}
+
+.tb-step:hover {
+  background: rgb(var(--fg) / 0.1);
+  color: rgb(var(--fg));
+}
+
+.tb-step:active {
+  transform: translateY(1px) scale(0.94);
+  transition-duration: var(--t-press);
+}
+
+.progress-track {
+  /* ★ 它是这一行里唯二的弹性元素（另一个是标题），两者分担剩余宽度。
+   *   基准 60px、下限 52px —— 560px 宽的窗口里它实测就压在 52px 上。 */
+  flex: 1 1 60px;
+  min-width: 52px;
+  /* ★★ 轨道只画 3px，但**点击热区要 15px**：它已经被挤到 52px 宽，
+   *   若再只有 3px 高，"点进度条跳转"就成了一件要靠运气的事。
+   *   做法是上下各撑 6px 透明 padding + `background-clip: content-box`
+   *   —— 热区变大，画出来的那条线仍然是 3px。 */
+  box-sizing: border-box;
+  /* 15px 高 = 3px 的线 + 上下各 6px 的透明热区（见上面的注释）。
+   * ★ 必须是 `border-box`：用 `content-box` 的话 `flex-basis: 60px` 只算内容宽，
+   *   这上下共 12px 的 padding 会**额外**占位 —— 而这一行没有多余的 12px 给它。 */
+  height: 15px;
+  padding: 6px 0;
+  border-radius: 2px;
+  background: rgb(var(--fg) / 0.08);
+  background-clip: content-box;
+  overflow: hidden;
+  cursor: pointer;
+  position: relative;
+}
+
+.progress-fill {
+  height: 100%;
+  background: rgb(var(--accent));
+  border-radius: 2px;
+  /* ★ `linear` + 120ms，**特意不复用 token**：它跟的是识别进度（连续信号），
+   *   不是某次交互。用 ease 会让它在每次更新时"缓一下"，
+   *   连续推进的进度条看起来就会一顿一顿。
+   *   ——"跟连续信号走的过渡一律 linear"，这条和收音环是同一个道理。 */
+  transition: width 0.12s linear;
+}
+
+/* ---------------------------------------------------------------- 抽屉 */
+
+/* 设置面板 = Apple 的 inset grouped list。
+ *
+ * 三条结构规则（都来自 HIG，不是审美偏好）：
+ *   1. 分组卡片与页面底色**同色系、不同层**，靠明度差分层，不靠描边；
+ *   2. 卡片外面**留出页边距**（inset），不是通栏 —— 通栏是网页表格的做法；
+ *   3. 分隔线**从文字左边缘起**、不通到右边缘。
+ * 第 3 条最容易被忽略，也最影响"像不像苹果"。 */
+.drawer {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 352px;
+  max-width: 100%;
+  background: rgb(var(--bg));
+  border-left: 1px solid rgb(var(--hair) / 0.08);
+  transform: translateX(101%);
+  /* ★ 抽屉进出用 `--t-enter`（240ms）+ `--ease`：
+   *   它是一条**大位移**（352px 整块滑出），过冲缓动在这儿会把边缘甩出窗口
+   *   ⇒ 必须用稳的 `--ease`，不是 `--ease-back`。
+   *   240ms 让"它从右边来"这件事被看清楚，这正是在交代层级。 */
+  transition: transform var(--t-enter) var(--ease);
+  display: flex;
+  flex-direction: column;
+  z-index: 20;
+}
+
+.drawer.open {
+  transform: translateX(0);
+}
+
+.drawer-head {
+  flex: 0 0 auto;
+  height: var(--h-top);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 8px 0 16px;
+  border-bottom: 1px solid rgb(var(--hair) / 0.07);
+  font-size: 13px;
+  font-weight: 600;
+  color: rgb(var(--fg));
+}
+
+.drawer-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 14px 14px 28px;
+}
+
+/* --------------------------------------------------------- 分组（Apple 卡片） */
+
+.grp {
+  margin-bottom: 22px;
+}
+
+.grp-h {
+  display: flex;
+  align-items: center;
+  margin: 0 0 7px;
+  padding: 0 4px;
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: rgb(var(--fg-faint));
+}
+
+/* 可折叠的分组标题（「更多」那一组）。
+ *
+ * ★ 整行可点，热区做到 20px 高 —— 一个只包住 11.5px 文字的点击区
+ *   在会议中根本点不准。向下补 4px 内边距把热区撑起来，
+ *   视觉上那一行文字的位置不变。 */
+.grp-h.foldable {
+  cursor: pointer;
+  padding: 4px 4px 5px;
+  margin-bottom: 3px;
+  border-radius: var(--r-ctrl);
+  transition: background var(--t-fast) ease, color var(--t-fast) ease;
+}
+
+.grp-h.foldable:hover {
+  background: rgb(var(--fg) / 0.05);
+  color: rgb(var(--fg-dim));
+}
+
+/* 折角箭头：`›` 用 `transform` 转 90° 变成 `⌄`。
+ * 用旋转而不是换字符 —— 换字符在动画中间会闪一下，而且两个字符的字形
+ * 宽度不一样，转的一瞬间标题会横向跳一格。 */
+.grp-caret {
+  display: inline-block;
+  width: 12px;
+  margin-right: 2px;
+  font-size: 13px;
+  line-height: 1;
+  transform: rotate(0deg);
+  transition: transform var(--t-base) var(--ease);
+}
+
+.grp-caret.open {
+  transform: rotate(90deg);
+}
+
+.grp-box {
+  background: rgb(var(--card));
+  border-radius: var(--r-card);
+  overflow: hidden;
+}
+
+/* 一行。左标签右控件；超出宽度时标签换行、控件不缩。 */
+.grp-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 40px;
+  padding: 7px var(--row-pad);
+  font-size: 12.5px;
+  color: rgb(var(--fg));
+}
+
+/* 分隔线：从文字左边缘起，不通到右边。最后一行没有线。 */
+.grp-row + .grp-row::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: var(--row-pad);
+  right: 0;
+  height: 1px;
+  background: rgb(var(--hair) / 0.08);
+}
+
+/* 缩进更深的行（例如分组内的小项），线也跟着缩进。 */
+.grp-row.sub {
+  padding-left: calc(var(--row-pad) + 14px);
+}
+
+.grp-row.sub + .grp-row::before,
+.grp-row + .grp-row.sub::before {
+  left: calc(var(--row-pad) + 14px);
+}
+
+/* 可点整行的行（导航/动作）：给出按压反馈，而不是只让文字像链接。 */
+.grp-row.tap {
+  cursor: pointer;
+  transition: background var(--t-fast) ease;
+}
+
+.grp-row.tap:hover {
+  background: rgb(var(--hair) / 0.05);
+}
+
+.grp-row.tap:active {
+  background: rgb(var(--hair) / 0.09);
+}
+
+/* 纵向排布的行（滑杆、多行输入）—— 控件占满整行。 */
+.grp-row.col {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+}
+
+.grp-l {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+/* 标签可能带一枚控件（旧版这里还有一枚提示图标，第十一轮删了）。
+ * 用 flex 让文字正常省略，控件不被文字挤走。 */
+.grp-t {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.grp-s {
+  font-size: 11px;
+  line-height: 1.55;
+  color: rgb(var(--fg-faint));
+}
+
+/*
+ * 行内副标题（`.grp-l` 里的那种）强制单行 + 省略号。
+ *
+ * 为什么选择器要写成 `.grp-l .grp-s` 而不是直接改 `.grp-s`：
+ * 块级说明（模型缺失警告、自检结论、"最近听到"）也是 `.grp-s`，
+ * 但它们挂在 `.grp-row.col` 下面、**需要换行**。
+ * 只认 `.grp-l` 里的那些，正好只命中"标签下面那行小字"。
+ *
+ * 这行小字的长度是不可控的（稿件名可能很长），一旦换行会把下面整组
+ * 推出可视区 —— 在小窗口里这是最贵的浪费。
+ */
+.grp-l .grp-s {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.grp-r {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* 右侧的当前值 —— 等宽，避免拖动滑杆时数字来回跳宽度。 */
+.grp-v {
+  font-family: ui-monospace, "SF Mono", "Cascadia Mono", Consolas, monospace;
+  font-size: 11.5px;
+  color: rgb(var(--fg-dim));
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* 分组里的一个小节标题（分隔不同性质的行，如「排版」「窗口」内部再分）。 */
+.grp-sub-h {
+  position: relative;
+  padding: 9px var(--row-pad) 4px;
+  font-size: 11px;
+  color: rgb(var(--fg-faint));
+}
+
+/*
+ * 功能介绍区（「更多」里那块可折叠的长文）。
+ *
+ * ★ 为什么不直接用 `.grp-s`：那一类的行内形态是**单行 + 省略号**
+ *   （见上面 `.grp-l .grp-s`），而功能介绍里每条都要写两三句，
+ *   省略号会把最要紧的后半句吃掉。所以这里另起一套：纵排、允许换行。
+ *
+ * 字号取 11.5px 而不是 11px：它比行内小字长得多，连续读几十行，
+ * 11px 在 Windows 的默认 DPI 下会开始发虚。
+ */
+.guide {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 2px 0 4px;
+}
+
+.guide-sec {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+/* 小节标题（如「窗口」）。用强调色，是这一块里唯一的标题层。 */
+.guide-h {
+  font-size: 12px;
+  font-weight: 600;
+  color: rgb(var(--fg));
+}
+
+.guide-items {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+/*
+ * 一条介绍：术语与说明**同行**、术语在前。
+ *
+ * ★ 为什么不用「术语单独一行、说明另起一行」：那会让这一块高度翻倍，
+ *   二十多条下来要滚很久。术语都很短（2~5 字），与说明的第一句
+ *   挤在一行里读起来反而更快 —— 像读词典。
+ *
+ * ★★ 间距**必须写在 JSX 的文本里**（`GuideItem` 里 `k` 后面那个空格），
+ *   不能只靠这里的 `column-gap`。
+ *   实测：`column-gap` 在**子项内部换行**时不产生间距 ——
+ *   flex 的 gap 算的是 flex 项之间的距离，而说明文字是一个
+ *   `flex: 1 1 0` 的项，它内部逐字换行时，术语与它首字之间
+ *   仍然贴着（出图确认：曾经显示成「当前开始或结束这一场提词」）。
+ *   gap 保留在这儿，用于说明**整体换行**时术语不会贴到上一行末尾。
+ *
+ * ★ 换行时说明另起一行并顶到最左。试过做悬挂缩进（第二行对齐到
+ *   术语起点），实测**反而更难读**：术语只有 2~5 字，缩进量太小，
+ *   看不出层级，倒像排版没对齐。
+ */
+.guide-item {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  column-gap: 7px;
+  font-size: 11.5px;
+  line-height: 1.62;
+  color: rgb(var(--fg-dim));
+}
+
+.guide-k {
+  flex: 0 0 auto;
+  font-weight: 600;
+  color: rgb(var(--fg));
+}
+
+/*
+ * 术语与说明之间的间距走**伪元素**，不走 `column-gap`，也不靠 JSX 里的空格。
+ *
+ * ★ 两条路都实测过、都不work，记录下来免得下一个人再试一遍：
+ *   ① `column-gap`：gap 算的是 flex **项**之间的距离。说明文字是**一项**
+ *      （`flex: 1 1 0`）、内部逐字换行，所以术语与它首字之间不产生间距 ——
+ *      出图显示成「当前开始或结束这一场提词」。
+ *   ② JSX 里写 `{" "}`：React 会把 span 之间的纯空白**折叠掉**
+ *      （同一行的相邻元素间没有可渲染的文本节点），出图无变化。
+ *   ⇒ 只剩伪元素这一条：它挂在术语**自己**的盒子上，一定被渲染。
+ */
+.guide-k::after {
+  content: "";
+  display: inline-block;
+  width: 7px;
+}
+
+.guide-v {
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+.grp-sub-h::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: var(--row-pad);
+  right: 0;
+  height: 1px;
+  background: rgb(var(--hair) / 0.08);
+}
+
+/* 会前自检的状态点。
+ * 三档颜色是**唯一允许出现在设置面板里的彩色** —— 因为它们表达的是
+ * "能不能开讲"这件事本身，而不是装饰。 */
+.pf-dot {
+  flex: 0 0 auto;
+  width: 8px;
+  height: 8px;
+  margin-top: 5px;
+  border-radius: 50%;
+  background: rgb(var(--fg-faint));
+}
+
+.pf-dot.ok {
+  background: rgb(var(--ok));
+}
+
+.pf-dot.warn {
+  background: rgb(var(--warn));
+}
+
+.pf-dot.bad {
+  background: rgb(var(--err));
+  box-shadow: 0 0 0 3px rgb(var(--err) / 0.16);
+}
+
+/* ---------------------------------------------------------------------------
+ * 悬停气泡样式（.hint-ico 感叹号按钮 + .tip-bubble 气泡本体）第十一轮**整个删掉了**。
+ *
+ * 用户的原话：「不行，还是删掉全部的提示吧」。理由与实现史见
+ * `src/components/Hint.tsx` 顶部那段（那个文件现在只剩注释）。
+ *
+ * ★ 这里刻意**不留**一个「将来可能还要用」的骨架（比如保留 `.tip-bubble`
+ *   的定位与配色、只是没人调用）。留着它，下一个人看到一整套写得很细的气泡
+ *   样式，第一反应会是「哦原来要做提示，接口在哪里」，而不是「这个项目不做提示」。
+ *   **删干净**才是把决定传达下去的方式。同理 `check-tooltips.py` 会把
+ *   `tip-bubble` / `hint-ico` 这些名字当作违规词报出来。
+ * ------------------------------------------------------------------------- */
+/* 兼容旧类名：仍在用的组件不必一起改。 */
+.sect {
+  margin-bottom: 20px;
+}
+
+.sect > h4 {
+  margin: 0 0 9px;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: rgb(var(--fg-faint));
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-height: 30px;
+  font-size: 12.5px;
+  color: rgb(var(--fg));
+}
+
+.row .k {
+  color: rgb(var(--fg-dim));
+}
+
+.row .v {
+  color: rgb(var(--fg-dim));
+  font-family: ui-monospace, "SF Mono", Consolas, monospace;
+  font-size: 11px;
+}
+
+.row.stack {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+}
+
+.btn {
+  height: 30px;
+  padding: 0 13px;
+  border-radius: var(--r-ctrl);
+  border: 1px solid rgb(var(--fg) / 0.12);
+  background: rgb(var(--fg) / 0.05);
+  color: rgb(var(--fg));
+  font-size: 12px;
+  cursor: pointer;
+  transition: background var(--t-fast) ease, transform var(--t-fast) ease;
+  white-space: nowrap;
+}
+
+.btn:hover {
+  background: rgb(var(--fg) / 0.1);
+}
+
+/* 按压：位移 1px + 极轻的内缩。
+ * ★ 与 `.hero-btn` 同一套道理（加 scale 才有"按下去"的实感），
+ *   但幅度更小（0.98 而不是 0.96）：这是矩形小按钮，圆角的视觉重量比圆轻。
+ * ★ 时长走 `--t-press`（90ms）—— 手还在按钮上，反馈必须当场到。 */
+.btn:active {
+  transform: translateY(1px) scale(0.98);
+  transition-duration: var(--t-press);
+}
+
+.btn.primary {
+  background: rgb(var(--accent));
+  border-color: rgb(var(--accent));
+  color: #fff;
+}
+
+.btn.primary:hover {
+  background: rgb(var(--accent) / 0.85);
+}
+
+.btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.btn-row {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+/* 分段控件：对齐方式用三个互斥的按钮比下拉框更直观（少一次展开）。 */
+.seg {
+  display: inline-flex;
+  border: 1px solid rgb(var(--fg) / 0.12);
+  border-radius: var(--r-ctrl);
+  overflow: hidden;
+  flex: 0 0 auto;
+}
+
+.seg-btn {
+  height: 26px;
+  min-width: 38px;
+  padding: 0 10px;
+  border: none;
+  background: transparent;
+  color: rgb(var(--fg-dim));
+  font-size: 12px;
+  cursor: pointer;
+  transition: background var(--t-fast) ease, color var(--t-fast) ease;
+}
+
+.seg-btn + .seg-btn {
+  border-left: 1px solid rgb(var(--fg) / 0.1);
+}
+
+.seg-btn:hover {
+  background: rgb(var(--fg) / 0.08);
+}
+
+.seg-btn.on {
+  background: rgb(var(--accent) / 0.18);
+  color: rgb(var(--accent));
+}
+
+/* 撑满整行的分段控件（「推进方式」三选一用）。
+ * 默认的 `.seg` 是 inline-flex、按钮各自按内容宽度 —— 那适合"左/中/右"那种
+ * 两三个字的短标签。推进方式是这一页最要紧的一个选择，三个答案等宽撑满，
+ * 一眼能把三个都读完，不必先扫一遍再决定点哪个。 */
+.seg.fill {
+  display: flex;
+  width: 100%;
+}
+
+.seg.fill .seg-btn {
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+.preset-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 14px;
+}
+
+select,
+input[type="text"],
+input[type="number"],
+textarea {
+  width: 100%;
+  background: rgb(var(--panel-2));
+  border: 1px solid rgb(var(--fg) / 0.1);
+  border-radius: 6px;
+  color: rgb(var(--fg));
+  font-size: 12px;
+  padding: 6px 8px;
+  font-family: inherit;
+  outline: none;
+}
+
+select:focus,
+input:focus,
+textarea:focus {
+  border-color: rgb(var(--accent) / 0.6);
+}
+
+textarea {
+  resize: vertical;
+  min-height: 64px;
+  line-height: 1.6;
+}
+
+/* iOS 开关。
+ *
+ * 决定"像不像苹果"的是**动力学**，不是形状：轨道是一枚胶囊、滑块带投影，
+ * 这些都只是静态像；真的手感来自三件事：
+ *   ① 滑块带一点**回弹**（位移的缓动是 back-out，不是 ease-out）；
+ *   ② 按住时滑块**横向抻开**（iOS 的招牌，按下去那一下能感觉到"抓住了"）；
+ *   ③ 抻开与归位比位移**快一半**（手指的压力变化比位置变化更即时）。
+ *
+ * ★★ 抻开必须用 `transform: scaleX()`，**不能改 `width`**：
+ *   `width` 会触发重排（每一次状态变化都让整行重新布局），而且它和位移
+ *   混在同一条 `transform` 里没法分开给曲线。改版前用的正是 `width`。
+ *
+ * ★ 位移量存在 `--x` 上、由 `.on` 改，`::after` 只写一条
+ *   `translateX(var(--x))`。这样 `:active` 那条（要"保留位移 + 加挤压"）
+ *   就不会和 `.switch.on::after` 抢同一个属性 —— 两条选择器权重相同，
+ *   谁在后面谁赢，那种写法迟早会因为改个顺序而让滑块"弹回左边"。
+ */
+.switch {
+  position: relative;
+  width: 44px;
+  height: 26px;
+  flex: 0 0 auto;
+  border-radius: var(--r-pill);
+  background: rgb(var(--hair) / 0.16);
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  /* 位移 18px = 轨道 44 − 滑块 22 − 两侧各 2（见 `.switch.on`） */
+  --x: 0px;
+  /* 轨道比滑块慢一拍起步：位移已经动了、底色还在追，像 iOS。
+   * ★ 260ms 是**刻意比 token 长**的一处：它跟的不是"一次点击"，
+   *   而是"一个持续状态的颜色渐变"，慢一点才读得出"在追"。
+   *   仍守住 250ms 附近的上限。曲线是 Material 的 standard（两侧对称），
+   *   用于颜色插值最中性 —— 别换成 `--ease-back`（颜色过冲会闪）。 */
+  transition: background-color 260ms cubic-bezier(0.4, 0, 0.2, 1);
+  box-shadow: inset 0 0 0 0.5px rgb(0 0 0 / 0.04);
+}
+
+.switch.on {
+  background: rgb(var(--ok));
+  --x: 18px;
+}
+
+.switch::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 3px rgb(0 0 0 / 0.28), 0 0 0 0.5px rgb(0 0 0 / 0.06);
+  transform: translateX(var(--x)) scaleX(1);
+  /* back-out 的轻回弹：过冲约 1px（肉眼是"弹了一下"，不是"冲出去了"）。
+   * ★ 改用 token `--ease-back` 之后曲线略收敛（过冲从约 1.4px 降到约 1.2px），
+   *   手感不变但和全项目共用一条定义 —— 以前这里是个一次性写死的魔数。
+   * ★ 240ms：比轨道颜色快、比按压反馈慢，正是"位置变化"该有的中间档。 */
+  transition: transform 240ms var(--ease-back);
+}
+
+
+/* 按住：滑块横向抻开一点，并且**位移照旧跟着** `--x`。
+ * （只写 scaleX 会把 translate 冲掉 —— 滑块会退回起点，看着像失灵。） */
+.switch:active::after {
+  transform: translateX(var(--x)) scaleX(1.16);
+  transition: transform 160ms var(--ease);
+}
+
+.switch:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* 系统层面要求"少动画"时不演：状态照样变，只是瞬间到位。
+ *
+ * ★★ 2026-09-27 起，**总闸已经挪到文件末尾**（用通配符覆盖全项目）——
+ *   这里只剩开关**独有**的那一条：抻开。
+ *   全局那条会把 `transition-duration` 压到 0.01ms，但 `:active` 里那条
+ *   `scaleX(1.16)` 是**另一条声明**、不受时长影响，所以必须在这里显式取消，
+ *   否则"少动画"模式下开关仍会在按住时抻开一下。
+ *
+ * ★ 别再往这里加元素了 —— 要覆盖就给末尾那个总闸加选择器。 */
+@media (prefers-reduced-motion: reduce) {
+  .switch:active::after {
+    transform: translateX(var(--x)) scaleX(1);
+  }
+}
+
+/* 滑杆：加粗轨道、放大滑块，并给滑块一点投影。
+ * accent-color 已经在 Chromium 里负责「已填充部分」的着色，不用自己画两层。 */
+input[type="range"] {
+  width: 100%;
+  height: 22px;
+  margin: 0;
+  accent-color: rgb(var(--accent));
+  cursor: pointer;
+  background: transparent;
+}
+
+input[type="range"]::-webkit-slider-runnable-track {
+  height: 4px;
+  border-radius: 2px;
+  background: rgb(var(--hair) / 0.14);
+}
+
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 16px;
+  height: 16px;
+  margin-top: -6px;
+  border-radius: 50%;
+  background: #fff;
+  border: none;
+  box-shadow: 0 1px 3px rgb(0 0 0 / 0.35);
+  transition: transform var(--t-press) var(--ease-back);
+}
+
+/* 按住滑块：放大 12% 表示"抓住了"。
+ * ★ 用 `--ease-back`：松手回落时那一点过冲让它"弹"回原尺寸。
+ * ★ 时长 `--t-press`：手指的压力变化必须**当场**被看见。 */
+input[type="range"]:active::-webkit-slider-thumb {
+  transform: scale(1.12);
+}
+
+/* 跟读那一组的滑杆换成跟读色。
+ * ★ 只给这一组换，其余保持蓝（accent）：蓝在本产品里的意思是
+ *   "用户自己按下的东西"，而跟读是"机器在跟"——两件事不该同色。
+ * ★ 用类名而不是"设置里的第几组"：位置选择器一改版就静默失效，
+ *   而且失效时不报错，只是颜色悄悄回到蓝。 */
+.grp-row.read-tone input[type="range"] {
+  accent-color: rgb(var(--read));
+}
+
+/* ---- 跟读颜色：一行色点 ---- */
+.dots {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.dot {
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  cursor: pointer;
+  /* 颜色由内联 `color` 给，这里统一用 currentColor —— 底色与描边
+   * 都从同一个来源取，改色号时不可能只改到其中一个。 */
+  background: currentColor;
+  transition: transform var(--t-fast) var(--ease);
+}
+
+.dot:hover {
+  transform: scale(1.12);
+}
+
+/* 选中：**空心环**。
+ * 不放大、不打勾：色点本身就在表达颜色，唯一需要额外说明的是"哪一个当前生效"，
+ * 而"中间空掉"最不容易被误读成"这个颜色更亮一点"。
+ * 用 inset 阴影画环而不是 `border`，是为了让环的外径与其它点严格一致。 */
+.dot.on {
+  background: transparent;
+  box-shadow: inset 0 0 0 2px currentColor;
+}
+
+.note {
+  font-size: 11px;
+  line-height: 1.7;
+  color: rgb(var(--fg-faint));
+}
+
+.note.warn {
+  color: rgb(var(--warn));
+}
+
+.note.err {
+  color: rgb(var(--err));
+}
+
+.note.ok {
+  color: rgb(var(--ok));
+}
+
+.mono {
+  font-family: ui-monospace, "SF Mono", Consolas, monospace;
+  font-size: 11px;
+  word-break: break-all;
+  color: rgb(var(--fg-faint));
+}
+
+.diag {
+  display: grid;
+  grid-template-columns: 88px 1fr;
+  gap: 4px 10px;
+  font-size: 11px;
+}
+
+.diag .dk {
+  color: rgb(var(--fg-faint));
+}
+
+.diag .dv {
+  color: rgb(var(--fg-dim));
+  font-family: ui-monospace, "SF Mono", Consolas, monospace;
+  word-break: break-all;
+}
+
+.banner {
+  margin: 0 0 12px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  font-size: 11.5px;
+  line-height: 1.7;
+  background: rgb(var(--warn) / 0.09);
+  border: 1px solid rgb(var(--warn) / 0.22);
+  color: rgb(var(--warn));
+}
+
+.banner.err {
+  background: rgb(var(--err) / 0.09);
+  border-color: rgb(var(--err) / 0.22);
+  color: rgb(var(--err));
+}
+
+.banner.ok {
+  background: rgb(var(--ok) / 0.08);
+  border-color: rgb(var(--ok) / 0.2);
+  color: rgb(var(--ok));
+}
+
+/* ---------------------------------------------------------------- 滚动条 */
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgb(var(--fg) / 0.1);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgb(var(--fg) / 0.18);
+}
+
+/* 提词时最不需要的就是一根显眼的滚动条 */
+.viewport::-webkit-scrollbar {
+  width: 4px;
+}
+
+.viewport::-webkit-scrollbar-thumb {
+  background: rgb(var(--fg) / 0.06);
+}
+
+/* ---------------------------------------------------------------- 手动接管提示 */
+
+/* 「让位中」的状态条。
+ *
+ * ★ 它**没有**跟着进度栏一起搬到顶部去，刻意留在下方，两个理由：
+ *   1. 窗口顶部那两行现在是**常驻**的导航层（顶栏 + 进度栏），
+ *      而这条状态条是临时的 —— 塞进顶部就是拿临时元件去挤常驻元件；
+ *   2. 更硬的一条：它会压到正文的锚点行。锚点可以调到 15% 高度，
+ *      那已经比两条栏的下沿更靠上了 —— 放在顶部必然挡字。
+ *   停在底部这两个约束都满足；顺手放到 toast 上方一格，
+ *   两者同时出现时不再叠在一起（原先一个 38px、一个 40px，是会叠的）。 */
+.manual-chip {
+  position: absolute;
+  left: 50%;
+  bottom: 44px;
+  transform: translateX(-50%);
+  z-index: 15;
+  padding: 4px 11px;
+  border-radius: var(--r-pill);
+  background: rgb(var(--warn) / 0.16);
+  border: 1px solid rgb(var(--warn) / 0.32);
+  color: rgb(var(--warn));
+  font-size: 11px;
+  white-space: nowrap;
+  animation: pop-in var(--t-fast) var(--ease);
+  pointer-events: none;
+}
+
+/* ---------------------------------------------------------------- 拖放覆盖层 */
+
+/* 铺满整窗。`pointer-events: none` 是必须的 ——
+ * 拖放是操作系统层面的事件（Windows 上 Tauri 用 OLE drop target 独占），
+ * 覆盖层一旦吃掉指针事件，落点判定就会出问题。 */
+.drag-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  border-radius: var(--r-outer);
+  border: 2px dashed rgb(var(--ok) / 0.55);
+  background: rgb(var(--bg) / 0.82);
+  animation: fade-in var(--t-base) var(--ease);
+}
+
+.drag-overlay.bad {
+  border-color: rgb(var(--warn) / 0.6);
+}
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.drag-overlay .do-box {
+  text-align: center;
+  padding: 0 24px;
+}
+
+.drag-overlay .do-icon {
+  font-size: 26px;
+  line-height: 1;
+  color: rgb(var(--ok));
+  margin-bottom: 10px;
+}
+
+.drag-overlay.bad .do-icon {
+  color: rgb(var(--warn));
+}
+
+.drag-overlay .do-title {
+  font-size: 15px;
+  color: rgb(var(--fg));
+  margin-bottom: 8px;
+}
+
+.drag-overlay .do-names {
+  font-size: 12.5px;
+  color: rgb(var(--fg-dim));
+  margin-bottom: 8px;
+  word-break: break-all;
+}
+
+.drag-overlay .do-note {
+  font-size: 11.5px;
+  line-height: 1.7;
+  color: rgb(var(--fg-faint));
+}
+
+/* ---------------------------------------------------------------- 历史浮层 */
+
+/* 会前 60 秒切稿是最高频动作，所以它挂在顶栏下沿一点就出来，
+ * 不像设置那样要开抽屉（少两步）。
+ *
+ * ★ 起点只算 `--h-top`：那一条栏就在窗口顶部，是这里唯一要避开的浮层，
+ *   所以往下多算一点都会让浮层白白矮一截。 */
+.history {
+  position: absolute;
+  top: calc(var(--h-top) + 6px);
+  left: 8px;
+  z-index: 30;
+  width: min(420px, calc(100% - 16px));
+  max-height: min(60vh, 460px);
+  display: flex;
+  flex-direction: column;
+  border: 1px solid rgb(var(--fg) / 0.12);
+  border-radius: var(--r-ctrl);
+  box-shadow: 0 18px 42px rgb(0 0 0 / 0.42);
+  overflow: hidden;
+  animation: pop-in var(--t-enter) var(--ease-back);
+}
+
+/* 浮层入场：从上方 6px 处滑入 + 淡入。
+ *
+ * ★★ 缓动用 `--ease-back`（带过冲）：6px 的位移 + 过冲 ≈ 只多走 2px，
+ *   读起来是"轻轻落下来"，不是"甩一下"。这是 Uiverse 元素里最普遍的一下
+ *   （它们的 `cubic-bezier(0.175,0.885,0.32,1.275)` 就是这个意思）。
+ * ★★ 时长用 `--t-enter`（240ms）而不是 `--t-base`：进场动画允许比状态切换略长，
+ *   因为它要**交代层级**（"我是从上面那层掉下来的"）。但 240ms 仍在上限内。
+ * ★ 位移量必须**小**。过冲缓动在 6px 上是弹性，在 40px 上就是晕。
+ *   凡是要大位移的地方（收起正文那种），一律回 `--ease`，别用这条。 */
+@keyframes pop-in {
+  from {
+    opacity: 0;
+    transform: translateY(-6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* 浮层退场。Windows 上这些浮层是"整块消失"的（React 直接卸载），
+ * 没有给退场动画留时间 —— 所以这条目前只用于将来接 `TransitionGroup`
+ * 之类的东西时有个现成的名字，别当它现在在生效。
+ * ★ 留它是为了把"退场该用 ease-in"这条判断写下来：
+ *   东西离开时要**加速走**，用进场那条缓动会让它拖泥带水地粘在原地。 */
+@keyframes pop-out {
+  from {
+    opacity: 1;
+    transform: translateY(0);
+  }
+  to {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+}
+
+
+.history-head {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 32px;
+  padding: 0 12px;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: rgb(var(--fg-faint));
+  border-bottom: 1px solid rgb(var(--fg) / 0.08);
+}
+
+.history-head .count {
+  margin-left: auto;
+  font-family: ui-monospace, "SF Mono", Consolas, monospace;
+}
+
+/* 换稿的两个"新来源"按钮（打开文件 / 粘贴一段）。
+ *
+ * ★ 改版把它们从顶栏挪进了这个面板：顶栏原来有 ✎（粘贴/编辑）和 ☰（历史）
+ *   两个图标，加上设置里的「打开文件」，同一件事散在三个地方。
+ *   现在顶栏只有一个「稿件」图标，点开就是这里 —— 而这两个按钮理所当然地
+ *   回到了它们**语义上**该在的地方（换稿面板）。
+ * ★ 放在**头部**而不是底部：这个面板的首要用途就是换稿，
+ *   而"从文件打开"和"粘贴一段"是其中最常想到的两条路，
+ *   不该要用户先滚过一屏历史才找得到。 */
+.history-act {
+  flex: 0 0 auto;
+  display: flex;
+  gap: 6px;
+  padding: 8px;
+  border-bottom: 1px solid rgb(var(--fg) / 0.08);
+}
+
+.history-act .btn {
+  flex: 1 1 0;
+  justify-content: center;
+}
+
+.history-list {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  padding: 4px;
+}
+
+.history-item {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  border-radius: var(--r-ctrl);
+}
+
+.history-item:hover {
+  background: rgb(var(--fg) / 0.06);
+}
+
+.history-main {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  align-items: flex-start;
+  padding: 7px 8px;
+  border: none;
+  background: transparent;
+  color: rgb(var(--fg));
+  cursor: pointer;
+  text-align: left;
+}
+
+.history-item .hi-title {
+  font-size: 12.5px;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.history-item .hi-meta {
+  font-size: 10.5px;
+  color: rgb(var(--fg-faint));
+}
+
+/* 标灰，但**不移除** —— 原文件可能只是插着的移动硬盘/网络盘没挂上。
+ * 自动移除会让用户"插上硬盘回来发现历史没了"。 */
+.history-item.missing .hi-title {
+  color: rgb(var(--fg-faint));
+  text-decoration: line-through;
+}
+
+.history-item.missing .hi-meta {
+  color: rgb(var(--warn));
+}
+
+.history-empty {
+  padding: 18px 14px;
+  font-size: 12px;
+  line-height: 1.9;
+  color: rgb(var(--fg-faint));
+}
+
+.history-foot {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border-top: 1px solid rgb(var(--fg) / 0.08);
+}
+
+/* ---------------------------------------------------------------- 一次性提示 */
+
+.toast {
+  position: absolute;
+  left: 50%;
+  /* 底部现在没有常驻栏了，所以贴到最下面即可；
+   * 「让位中」状态条排在它上方一格（见 .manual-chip）。 */
+  bottom: 12px;
+  transform: translateX(-50%);
+  z-index: 50;
+  max-width: min(90%, 520px);
+  padding: 8px 14px;
+  border-radius: var(--r-pill);
+  background: rgb(var(--panel-2) / 0.97);
+  border: 1px solid rgb(var(--fg) / 0.14);
+  color: rgb(var(--fg));
+  font-size: 12px;
+  line-height: 1.6;
+  box-shadow: 0 10px 28px rgb(0 0 0 / 0.4);
+  cursor: pointer;
+  animation: pop-in var(--t-enter) var(--ease-back);
+}
+
+.app.collapsed .toast {
+  bottom: -6px;
+}
+
+/* ---------------------------------------------------------------- 稿内查找 */
+
+/* 一条细横条，挂在顶栏下方居中。
+ *
+ * 为什么居中而不是像历史浮层那样靠左：查找是"对着整篇稿子"的动作，
+ * 它的输入框应当在视线正前方；历史列表是"选一条"，靠左更符合列表直觉。 */
+.findbar {
+  position: absolute;
+  top: calc(var(--h-top) + 6px);
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 32;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 5px 6px 5px 10px;
+  width: min(520px, calc(100% - 20px));
+  border: 1px solid rgb(var(--fg) / 0.12);
+  border-radius: var(--r-pill);
+  box-shadow: 0 14px 34px rgb(0 0 0 / 0.36);
+  animation: pop-in var(--t-enter) var(--ease-back);
+}
+
+.findbar .fb-icon {
+  flex: 0 0 auto;
+  color: rgb(var(--fg-faint));
+  font-size: 14px;
+  line-height: 1;
+}
+
+.findbar .fb-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 24px;
+  padding: 0 4px;
+  border: 0;
+  background: transparent;
+  color: rgb(var(--fg));
+  font: inherit;
+  font-size: 13px;
+  outline: none;
+}
+
+.findbar .fb-input::placeholder {
+  color: rgb(var(--fg-faint));
+}
+
+/* 计数用等宽字：翻页时数字跳动不会让整条栏跟着抖。
+ * `min-width` 是为了"1 / 12"变成"10 / 12"时不再挤动后面的按钮。 */
+.findbar .fb-count {
+  flex: 0 0 auto;
+  min-width: 52px;
+  text-align: right;
+  font-family: ui-monospace, "SF Mono", Consolas, monospace;
+  font-size: 11px;
+  color: rgb(var(--fg-dim));
+}
+
+/* 「没有匹配」是**黄**的，和普通的灰色计数区分开 ——
+ * 一屏字里找不着东西时，用户需要一眼看到"是真的没有"，而不是去数那个 0 */
+.findbar .fb-count.none {
+  color: rgb(var(--warn));
+}
+
+/* 查找条里的按钮要更矮 —— 这条栏本身只有 34px 高 */
+.findbar .btn {
+  height: 24px;
+  padding: 0 10px;
+  font-size: 11px;
+}
+
+/* ---------------------------------------------------------------- 搜索高亮 */
+
+/* 命中处的底色。`mark` 浏览器默认给黄底黑字，在深色界面里像贴了张纸条，
+ * 所以底色必须自己定，并且**只加下边框式的强调**，不改字色 ——
+ * 改字色会让整段稿子的字重看起来忽轻忽重。 */
+.sentence .hit {
+  background: rgb(var(--warn) / 0.22);
+  color: inherit;
+  border-radius: 2px;
+}
+
+/* 当前这一处——加一圈实底色，和其余命中拉开层次 */
+.sentence .hit.active {
+  background: rgb(var(--warn) / 0.55);
+  box-shadow: 0 0 0 2px rgb(var(--warn) / 0.3);
+}
+
+/* 命中所在的那一句。给一句淡背景，让"这一处属于哪句"一眼可辨 ——
+ * 长句里只标几个字的话，视线很难快速定位到它在哪一行。 */
+.sentence.hit-se {
+  background: rgb(var(--accent) / 0.09);
+  border-radius: 3px;
+}
+
+/* ---------------------------------------------------------------- 粘贴 / 编辑稿件 */
+
+.modal-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  /* 和窗口本身同圆角 —— 窗口是透明的圆角矩形，蒙层若是个方角，
+   * 四个角会在窗口外露出方块。 */
+  border-radius: var(--r-outer);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 14px;
+  /* 蒙层压暗但不全黑：用户得能看见后面稿子的轮廓，
+   * 才不会以为"整个应用变成了这个框" */
+  background: rgb(0 0 0 / 0.34);
+  animation: fade-in var(--t-fast) var(--ease);
+}
+
+.pastebox {
+  display: flex;
+  flex-direction: column;
+  width: min(620px, 100%);
+  max-height: 100%;
+  padding: 0 0 10px;
+  border: 1px solid rgb(var(--fg) / 0.14);
+  border-radius: var(--r-card);
+  background: rgb(var(--card) / 0.98);
+  box-shadow: 0 24px 60px rgb(0 0 0 / 0.5);
+  overflow: hidden;
+  animation: pop-in var(--t-enter) var(--ease-back);
+}
+
+.pastebox .pb-head {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 36px;
+  padding: 0 10px 0 14px;
+  border-bottom: 1px solid rgb(var(--hair) / 0.09);
+}
+
+.pastebox .pb-title {
+  flex: 1 1 auto;
+  font-size: 12.5px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+/* 提示文案给足行高：这段是"保存会发生什么"的关键说明，
+ * 挤成一行小灰字等于没写 */
+.pastebox .pb-hint {
+  flex: 0 0 auto;
+  padding: 8px 14px 2px;
+  font-size: 11.5px;
+  line-height: 1.65;
+  color: rgb(var(--fg-dim));
+}
+
+.pastebox .pb-row {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+}
+
+.pastebox .pb-label {
+  flex: 0 0 auto;
+  font-size: 11.5px;
+  color: rgb(var(--fg-dim));
+}
+
+.pastebox .pb-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 26px;
+  padding: 0 8px;
+  border: 1px solid rgb(var(--hair) / 0.12);
+  border-radius: var(--r-ctrl);
+  background: rgb(var(--card-hi) / 0.7);
+  color: rgb(var(--fg));
+  font: inherit;
+  font-size: 12px;
+  outline: none;
+}
+
+.pastebox .pb-input:focus {
+  border-color: rgb(var(--accent) / 0.55);
+}
+
+/* 正文框。`user-select: text` 必须显式打开 ——
+ * 全局 `body { user-select: none }` 是为了让窗口像原生控件而不是网页，
+ * 但在一块**要编辑文字**的框里禁选等于把功能废掉。 */
+.pastebox .pb-area {
+  flex: 1 1 auto;
+  min-height: 190px;
+  margin: 2px 14px 0;
+  padding: 10px 12px;
+  border: 1px solid rgb(var(--hair) / 0.12);
+  border-radius: var(--r-card);
+  background: rgb(var(--card-hi) / 0.55);
+  color: rgb(var(--fg));
+  font: inherit;
+  font-size: 13px;
+  line-height: 1.75;
+  resize: none;
+  outline: none;
+  user-select: text;
+}
+
+.pastebox .pb-area:focus {
+  border-color: rgb(var(--accent) / 0.55);
+  background: rgb(var(--card-hi) / 0.75);
+}
+
+.pastebox .pb-foot {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px 0;
+}
+
+.pastebox .pb-meta {
+  font-family: ui-monospace, "SF Mono", Consolas, monospace;
+  font-size: 11px;
+  color: rgb(var(--fg-faint));
+}
+
+/* 把右侧的按钮组推到头，左侧留「读剪贴板 / 字数」。
+ * ★ `.spacer` 在这个项目里是**逐处自己给的**（顶栏那条随改版一起去掉了），
+ *   所以这里明确写一份，别指望有个全局规则兜着。 */
+.pastebox .pb-foot .spacer {
+  flex: 1 1 auto;
+}
+
+/* 错误/提示文案占满剩余宽度并把按钮推到右边 —— 出现时不该把按钮挤得换行 */
+.pastebox .pb-msg {
+  flex: 0 1 auto;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: rgb(var(--warn));
+}
+
+/* 禁用态。之前只有 `.btn:disabled` 有样式，图标按钮没有 ——
+ * 查找条里那对翻页箭头在"没有匹配"时会看起来可点，点了却没反应。 */
+.icon-btn:disabled {
+  opacity: 0.35;
+  cursor: default;
+  background: transparent;
+}
+
+.icon-btn:disabled:hover {
+  background: transparent;
+}
+
+/* ==================================================================
+   动效总策略（2026-09-27「大换血」总闸）
+   ==================================================================
+
+   上面各元素是"一个个地改"，这里放两条**全局**策略。
+   它们管的是"什么时候**不**该动" —— 这比"怎么动"更难，也更容易被忽略。
+
+   ★ 为什么总策略要放最后（且在文件末尾而不是各元素旁边）：
+     它靠**层叠顺序 + 选择器特异性**去压上面所有个例。
+     放前面会被后面的个例逐条盖回来，变成一段看着像有、其实不生效的注释。
+*/
+
+/* ---------------------------------------------------------------
+   ① 提词进行中：只留有意义的动效
+
+   判据是"这个动效有没有在**传达状态**"：
+     有 ⇒ 留（大圆按钮按下反馈、进度条、收音环、跟读高亮、扫光）
+     没有 ⇒ 停（悬停抬升、阴影变化这类纯装饰）
+
+   ★ 为什么不干脆全停：提词中用户仍然会去点"暂停"、
+     仍然需要看到"我按到了" —— 把按钮反馈也停掉，
+     等于在最需要确认的时候把确认撤走。
+
+   ★ 为什么装饰性的必须停：屏幕正在被**当作稿子读**。
+     余光里任何非必要的运动都会被眼睛抓住，把人从句子上拽走。
+     这不是审美偏好，是这块屏幕的唯一职责。
+   --------------------------------------------------------------- */
+.app.prompting .btn,
+.app.prompting .icon-btn,
+.app.prompting .seg-btn,
+.app.prompting .tb-step,
+.app.prompting .history-item,
+.app.prompting .grp-h.foldable,
+.app.prompting .grp-row.tap {
+  /* 悬停态在提词中不再做位移/抬升，只保留颜色反馈。 */
+  transition-property: background-color, color, border-color, opacity;
+}
+
+.app.prompting .btn:hover,
+.app.prompting .icon-btn:hover,
+.app.prompting .seg-btn:hover,
+.app.prompting .tb-step:hover,
+.app.prompting .grp-h.foldable:hover {
+  transform: none;
+}
+
+/* 提词中，装饰性的"入场弹跳"一律不播 —— 它们只在打开抽屉/浮层时出现，
+   而那些动作在提词中本就该是最少发生的。真发生了也要瞬间到位。 */
+.app.prompting .pop-in,
+.app.prompting .history-pop,
+.app.prompting .notice-pop {
+  animation: none;
+}
+
+/* ---------------------------------------------------------------
+   ② 系统要求"少动画"：状态照变，动作瞬间到位
+
+   ★ 这条覆盖面必须**广**（用通配符），不能像以前那样只点名 `.switch`：
+     少动画是**无障碍需求**（前庭功能障碍者会因动效眩晕/恶心），
+     漏一个元素就是一种伤害。原来只写了 `.switch` 一处，
+     等于"只有开关尊重了这个设置"。
+
+   ★ 用 `0.01ms` 而不是 `0`：`transition-duration: 0s` 会让部分浏览器
+     **跳过 transitionend 事件**，而本项目有代码在等这个事件
+     （收起动画的第二拍）。给一个非零的极小值最稳。
+   ★ 用 `!important`：这条是用户/系统的显式要求，优先级应当高于任何个例。
+   --------------------------------------------------------------- */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* 滚动容器同理：`smooth` 是动效，该被上面那条一起关掉。
+   实测 Windows 下 `scroll-behavior` 不受上面通配符影响（它不是 transition/animation），
+   所以这里单独写一条。 */
+@media (prefers-reduced-motion: reduce) {
+  .viewport {
+    scroll-behavior: auto;
+  }
+}

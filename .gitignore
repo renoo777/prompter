@@ -1,0 +1,30 @@
+node_modules/
+dist/
+src-tauri/target/
+src-tauri/gen/
+*.log
+.DS_Store
+
+# 验证脚本产出的截图（窗口渲染 / 隐身对比），只在本地留着看
+# ⚠️ 只排**根目录**的 shots/，不能排 docs/shots/ —— 那是文档配图，
+#    README 与 UI改版-PM拆解.md 都引用它，排掉文档就缺图。
+/shots/
+/stealth_*.png
+.shot_*.png
+.shots/
+
+# 排查过程中的临时截图（正式文档配图在 docs/shots/，那 8 张要带）
+/_bbox_test.png
+/stealth_ref.png
+_pm_docs/
+
+# 文档配图目录里的临时探针（编号开头的正式图要带）
+docs/shots/tmp-*.png
+docs/shots/_*.png
+
+# Python 字节码缓存（scripts/ 下跑过诊断脚本就会生成）
+__pycache__/
+*.pyc
+
+# 排查用的临时脚本（正式的那些在 scripts/ 下，带文档头）
+_check_*.py
