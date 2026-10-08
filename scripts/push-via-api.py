@@ -18,15 +18,55 @@
 GitHub 的 Git Data API 全部挂在 api.github.com 上，可以**逐对象**把仓库建出来：
 blobs → trees → commits → ref，最后更新分支指针。**完全不经过 github.com**。
 
-## 关键设计：逐提交重放，SHA 与本地一致
+## 两个必须知道的限制（都是实测结论，不是猜的）
 
-不是"把文件塞成一个大提交"，而是**按本地提交顺序逐个重放**：
-每个提交用 `base_tree=父提交的树` + 该提交相对父提交的**变更集**，
-并**原样复制 author / committer / 日期 / message**。
+### ① 空仓库不能用 Git Data API —— 会 409 "Git Repository is empty."
 
-⇒ 结果 commit 的 SHA 与本地**逐字节相同**（git 的 commit 对象就是那几行文本）。
-好处：`git clone` 之后本地与远端同 SHA，不会有"历史对不上"的困惑。
-脚本会**逐个校验 SHA**，不一致就当场报出来，不假装成功。
+`POST /git/blobs` 和 `POST /git/trees` 在**没有任何提交**的仓库上会被拒。
+处置：先用 Contents API 写一个占位文件把仓库"激活"（产生第一个提交与分支），
+再照常重放；完成后把占位分支删掉。脚本已内置这一步。
+
+### ② 重放出来的 commit SHA **不可能**与本地相同 —— 差在消息末尾那个换行
+
+git 的 commit 对象就是一段纯文本：
+```
+tree <sha>
+[parent <sha>]
+author <名字> <邮箱> <时间戳> <时区>
+committer <名字> <邮箱> <时间戳> <时区>
+
+<消息>
+```
+其中 `<消息>` 以 `\n` 结尾（git 一贯如此）。而**GitHub 的提交 API 会把消息末尾的换行裁掉**。
+
+实测（根提交，无父提交，排除了父链干扰）：
+
+| 字段 | 本地 | 远端 | 结论 |
+|---|---|---|---|
+| tree | `a35299c3…` | `a35299c3…` | ✅ **一致** |
+| message 长度 | 473 | 472 | 差 1 个字符 |
+| 差的字符 | — | — | 就是一个 `\n` |
+| 去掉尾部换行后 | 内容完全相同 | | ✅ |
+
+⇒ **内容与权限位逐字节一致（tree SHA 相同即证明），但 commit SHA 必然不同。**
+（API 返回的日期显示成 `…Z` 只是 UTC 表示，与本地 `+0800` 是同一时刻，不是差异来源。）
+
+**这个限制没有绕法**：要 SHA 完全相同只能走 `git push`，而 `git push` 走
+`github.com:443` —— 那条路在本机网络上不通（见上）。所以：
+
+- 远端 = **内容忠实的一份镜像**；
+- 以后网络通了想推本地的新提交，需要 `git push --force`（历史不同源），
+  或者干脆以远端为准重新 clone。
+
+---
+
+## 关键设计：逐提交重放（不是把文件堆成一个大提交）
+
+按本地提交顺序逐个重放：每个提交用 `base_tree=父提交的树` + 该提交相对父提交的
+**变更集**，并**原样复制 author / committer / 日期 / message**。
+
+好处：远端有**完整的 7 段历史**（而不是一个"导入"提交），每个提交的 tree 都与本地对应提交
+**逐字节一致**；脚本会逐个校验 **tree SHA** 并在不一致时当场报出来，不假装成功。
 
 ## 用法
 
@@ -226,6 +266,28 @@ def main():
         return 4
     print("✓ 仓库：%s" % repo["html_url"])
 
+    # ★ 空仓库不能直接建 blob/tree：GitHub 会返回 409 "Git Repository is empty."
+    #   （Git Data API 的已知限制，不是权限问题）。
+    #   处置：先用 Contents API 写一个占位文件把仓库"激活"（产生第一个提交和分支），
+    #   之后照常重放本地提交 —— 我们的根提交本来就没有父提交，
+    #   所以重放出来的 SHA 仍与本地逐字节一致；最后把占位用的分支删掉。
+    st_refs, refs = api(token, "/repos/%s/%s/git/refs" % (login, args.repo))
+    bootstrap_branch = None
+    if st_refs != 200 or not refs:
+        dflt = repo.get("default_branch") or "main"
+        print("· 仓库为空 ⇒ 先用 Contents API 激活（临时分支 %s，完成后删除）" % dflt)
+        st, boot = api(token, "/repos/%s/%s/contents/.prompter-bootstrap"
+                       % (login, args.repo), "PUT", {
+                           "message": "chore: 初始化仓库（占位提交，随后由真实历史替换）",
+                           "content": base64.b64encode(
+                               b"Temporary bootstrap commit for Git Data API.\n").decode(),
+                           "branch": dflt,
+                       })
+        if st not in (200, 201):
+            print("✗ 激活空仓库失败：%s" % json.dumps(boot, ensure_ascii=False)[:300])
+            return 4
+        bootstrap_branch = dflt
+
     commits = list_commits()
     print("· 本地提交 %d 个，逐提交重放" % len(commits))
 
@@ -284,9 +346,16 @@ def main():
             print("✗ 建 commit 失败：%s" % json.dumps(com, ensure_ascii=False)[:300])
             return 6
         remote_commit = com["sha"]
-        ok = "✓ SHA 一致" if remote_commit == c else "⚠️ SHA 不同（本地 %s）" % c[:12]
-        print("  [%d/%d] %s  %s  %s" % (idx, len(commits), c[:12],
-                                        m["message"].splitlines()[0][:34], ok))
+        # ★ 真正该校验的是 **tree**，不是 commit SHA：
+        #   commit SHA 必然不同（GitHub 会裁掉消息末尾换行，见文件头说明），
+        #   而 tree SHA 相同 == 该提交的文件内容与权限位逐字节一致。
+        tree_ok = (remote_tree == m["tree"])
+        print("  [%d/%d] %s  %s  tree %s" % (
+            idx, len(commits), c[:12], m["message"].splitlines()[0][:32],
+            "✓ 一致" if tree_ok else "✗ 不一致！本地 %s" % m["tree"][:12]))
+        if not tree_ok:
+            print("✗ tree 不一致 ⇒ 内容迁移有误，中止（远端已被写脏，需重建）")
+            return 6
 
     # 4) 分支指针
     st, ref = api(token, "/repos/%s/%s/git/refs" % (login, args.repo))
@@ -302,16 +371,34 @@ def main():
         return 7
     print("✓ 分支 %s → %s" % (args.branch, remote_commit[:12]))
 
-    # 5) 让本地认为已同步（SHA 相同，本来就是同一批对象）
+    # 清理激活用的占位分支：先把默认分支切到真实分支，再删占位分支。
+    if bootstrap_branch and bootstrap_branch != args.branch:
+        st, _ = api(token, "/repos/%s/%s" % (login, args.repo), "PATCH",
+                    {"default_branch": args.branch})
+        if st == 200:
+            print("· 默认分支已切到 %s" % args.branch)
+        st, delb = api(token, "/repos/%s/%s/git/refs/heads/%s"
+                       % (login, args.repo, bootstrap_branch), "DELETE")
+        if st in (200, 204):
+            print("· 已删除占位分支 %s（其提交变为不可达，不影响仓库）" % bootstrap_branch)
+        else:
+            print("⚠️ 占位分支 %s 没删掉（HTTP %s）—— 不影响代码，可手动删"
+                  % (bootstrap_branch, st))
+
+    # 5) 内容核验 + 说明本地与远端的关系
     local_head = git_text("rev-parse", "HEAD").strip()
-    if local_head == remote_commit:
-        subprocess.run([ptg.GIT, "update-ref",
-                        "refs/remotes/origin/" + args.branch, remote_commit],
-                       cwd=ROOT, env=ptg.clean_env())
-        print("✓ 本地 origin/%s 已指向同一 SHA（无历史差异）" % args.branch)
-    else:
-        print("⚠️ 远端 HEAD 与本地不同（%s vs %s）——迁移不完整，请检查"
-              % (remote_commit[:12], local_head[:12]))
+    local_tree = git_text("rev-parse", "HEAD^{tree}").strip()
+    print()
+    if local_tree != remote_tree:
+        print("✗ 内容核验失败：tree 不同（本地 %s / 远端 %s）"
+              % (local_tree[:12], remote_tree[:12]))
+        return 8
+    print("✓ 内容核验：远端 HEAD tree == 本地 HEAD tree（%s）" % local_tree[:12])
+    print("  ⇒ 全部文件内容与权限位逐字节一致。")
+    print("· commit SHA 必然不同（GitHub 提交 API 裁掉消息末尾换行）⇒ 本地与远端是")
+    print("  「内容相同、历史不同源」。将来要推本地新提交，需 `git push --force`，")
+    print("  或以远端为准重新 clone。")
+    print("  本地 HEAD %s ／ 远端 HEAD %s" % (local_head[:12], remote_commit[:12]))
 
     print("\n✅ 完成：%s" % repo["html_url"])
     print("   Mac 上（github.com 通则）：git clone https://github.com/%s/%s.git" % (login, args.repo))

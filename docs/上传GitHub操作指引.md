@@ -1,18 +1,81 @@
 # 上传到 GitHub 的操作指引
 
-> 状态（2026-10-08 17:35 更新）：**本地已全部就绪，唯一障碍是凭据失效。**
-> 仓库已初始化、**六个提交**、工作区干净。
-> （提交清单见第八节；那里**只列到 `93e3ed1`** —— 最后一个提交的 SHA 不写进它自己的内容里：
-> 内容一改 SHA 就变，写进去的立刻就是旧的。）
-> 上传内容已逐项核对：**172 个文件 / 2.45 MB**，该带的全带、不该带的全排。
->
-> **本轮新增**：账号查清了（`renoo777`）；SSH 那 3 把钥匙逐把验过、全是部署密钥用不上（→ 第四节）；
-> 并且做了**不需要任何凭据**的转移文件 `prompter.bundle`，**你现在就能拷到 Mac 上跑**（→ 第五节）。
-> **要上 GitHub 仍需你给一把新 token**（路线 A 或 B）。
+## 零、✅ 已完成（2026-10-08 18:25）
+
+**仓库已上线：<https://github.com/renoo777/prompter>（公开，默认分支 `master`）**
+
+| 项 | 结果 |
+|---|---|
+| 提交 | **7 个**，完整历史（不是"导入"成一个大提交） |
+| 文件 | **173 个**（含本轮新增的推送脚本） |
+| 内容核验 | ✅ **远端 HEAD 的 tree SHA == 本地 HEAD 的 tree SHA** ⇒ 文件内容与权限位逐字节一致 |
+| `target/`(18GB) / `node_modules/` / `dist/` | ✅ 全部未上传 |
+
+### Mac 上怎么拿
+
+```bash
+git clone https://github.com/renoo777/prompter.git
+cd prompter
+xcode-select --install     # 第一次才需要
+npm install
+./build.sh
+```
+
+> **`git clone` 优先于网页 Download ZIP**：ZIP 丢文件可执行位（`build.sh` 变 `-rw-r--r--`），
+> 直接 `./build.sh` 报 Permission denied，还得补 `chmod +x *.sh`。
+
+**若 Mac 上也连不上 `github.com`**（国内网络常见），用零凭据的离线包：
+`_transfer/prompter.bundle` → `git clone prompter.bundle prompter`（见第五节）。
+
+### ★ 两条本次踩到、以后还会遇到的坑
+
+**坑 1｜「我明明改了 token，怎么还是 401」——你改的不是 git 读的那条。**
+GitHub 的 HTTPS 会让 git 按**解析出的 IP** 另存一份凭据。你机器上有 5 条 `git:https://*`：
+
+| 条目 | 修改时间 | 状态 |
+|---|---|---|
+| `git:https://github.com` ← **git 默认读这条** | 2026-09-07 | ❌ 401 |
+| `git:https://140.82.116.4` | 2026-09-06 | ❌ 401 |
+| **`git:https://140.82.112.4`** ← **你今天改的是这条** | **2026-10-08** | ✅ **有效** |
+| `git:https://140.82.113.3` | 2026-09-06 | ❌ 401 |
+| `git:https://140.82.121.3` | 2026-09-06 | ❌ 401 |
+
+⇒ `scripts/push-to-github.py` 已改成**枚举全部 git 凭据、逐条验、用第一条能通的**，
+不再只读 `github.com` 那一条。
+
+**坑 2｜`git push` 走不通，但 API 通 —— 于是改用 REST API 推送。**
+实测本机网络：`api.github.com` ✅ 0.3s ／ `github.com:443` ❌ 超时 ／ `codeload.github.com` ❌ 超时。
+而 `git push` 走的正是 `github.com` ⇒ 怎么试都报 `Connection was reset` / `Could not connect`。
+**这不是认证问题，是网络问题。**
+
+处置：`scripts/push-via-api.py` —— 经 `api.github.com` 的 Git Data API
+（blobs → trees → commits → ref）**逐提交重放**，全程不碰 `github.com`。
+脚本内已内置两个实测限制的处置（空仓库 409、消息末尾换行被裁导致 SHA 必然不同），
+文件头有完整说明。
+
+### ⚠️ 一个必须知道的后果：本地与远端「同内容、异历史」
+
+GitHub 提交 API **会裁掉消息末尾的换行**，而 git 的提交对象消息必然以换行结尾
+⇒ **commit SHA 不可能复现**（实测：根提交 tree 完全相同、消息只差末尾一个 `\n`）。
+
+所以将来网络通了、想推本地新提交时：
+
+```bash
+git push --force      # 历史不同源，必须 force
+```
+
+或者干脆**以远端为准重新 clone**。内容不会丢——tree SHA 已证明逐字节一致。
 
 ---
 
-## 一、结论先说：**你的 token 过期了**
+> ## 以下为排查过程存档（保留以备复用）
+>
+> 本节的路线 A/B/C/D 是在**还不知道"API 能通、github.com 不通"**时写的，
+> 当时判断的阻塞点是"凭据失效"。**结论已被第零节取代**，但排查手法仍然有效。
+
+---
+
+## 一、排查存档：`git:https://github.com` 这条的 token 是过期的
 
 我为了"直接推"把整条链路挖到底了。过程和结论如实写在下面。
 
