@@ -10,7 +10,7 @@
   3. 上面两次构建零警告
   4. tsc --noEmit 零错 + vite build 通过 + 静态前端检查（STATIC_CHECKS，
      目前是 check-tooltips.py / check-hook-order.py / check-hover-silent.py /
-     check-glass-mode.py / check-doc-images.py）
+     check-glass-mode.py / check-doc-refs.py）
 
 ★ 期望值只认下面那个 `EXPECT` 字典 —— 这份文件头只是说明，数字以 `EXPECT` 为准。
   ★ 2026-10-09 真踩：这两行一直停在 107 / 91，而 `EXPECT` 早已是 112 / 96
@@ -76,20 +76,29 @@ STATIC_CHECKS = [
     "check-hook-order.py",
     "check-hover-silent.py",
     "check-glass-mode.py",
-    "check-doc-images.py",
+    "check-doc-refs.py",
 ]
 
-# ★ 2026-10-09（第十四轮·README 收成产品页）加了第四道 `check-doc-images.py`。
-#   README 这一轮第一次有配图（docs/img/），而**图片路径写错没有任何东西会响** ——
-#   编译 / tsc / 出包 / 其它门槛全都不读 Markdown，本地也没人会一张张点开看。
+# ★ 2026-10-09（第十四轮·README 收成产品页）加了第四道 `check-doc-refs.py`。
+#   README 这一轮第一次有配图（docs/img/），并把工程内容拆成三份新文档 ⇒
+#   大量新增**相对引用**。而**路径写错没有任何东西会响** ——
+#   编译 / tsc / 出包 / 其它门槛全都不读 Markdown，本地也没人会一个个点开看。
 #   它纯读文件、几毫秒，所以按"每次必跑"挂在这里。
-#   ★ 已做变异测试：塞一条断链 → 报红 rc=1（且**只报那一条**）；
-#     塞进围栏代码块 / **行内代码**里的示例引用 → 都不报
-#     （`strip_fences()` + `INLINE_CODE` 负责）。
-#     ★ 行内代码那一条是它上线后**第一次真跑就暴露**的漏洞：只剥围栏块时，
-#       `判断基线.md` 里用单反引号举的"图片语法长什么样"的例子被当真引用，
-#       门槛对着 `docs/path` 报了一条假断链。**假阳性比没有门槛更坏**。
-#     修完还原复跑 ✅。
+#   ★ 最初只查图片，名字叫 check-doc-images.py；同一天里"悬空引用"这类错
+#     手工修了 6 处 ⇒ 扩成**图片 + 文档链接**，名字也改成 check-doc-refs.py
+#     —— 留着旧名字会让下一个人不知道它其实也查链接。
+#   ★★ 扩到链接后**第一次跑就抓到 2 处真实断链**，且都是肉眼发现不了的：
+#     ① `docs/能力与验证状态.md` 里的 `src-tauri/src/stealth/macos.rs`
+#        （在 README 里对的，**被拆进 docs/ 后就断了** —— 拆分引入的回归）；
+#     ② `docs/上传GitHub操作指引.md` 里的 `docs/macOS上机测试清单.md`
+#        （在 docs/ 里成了 `docs/docs/…`）。
+#     ⇒ 教训：**相对路径的正确性取决于文件在哪，文件一搬家所有相对引用都可能失效。**
+#   ★ 已做变异测试：塞 1 张断链图 + 2 条断链链接 → 报红 rc=1 且**恰好只报那 3 条**；
+#     纯锚点 `[x](#abc)`、围栏代码块与**行内代码**里的示例引用 → 都不报
+#     （`strip_fences()` + `INLINE_CODE` 负责）。还原后复跑 ✅。
+#     ★ 行内代码那一条是它上线后第一次真跑暴露的：只剥围栏块时，
+#       `判断基线.md` 里用单反引号举的"这些语法长什么样"的例子被当真引用，
+#       门槛报了一条假断链。**假阳性比没有门槛更坏。**
 
 # ★ Windows 上必须写全名：subprocess 走 CreateProcess，会自动补 `.exe`，
 #   但**不会**补 `.cmd` ⇒ 写裸 `npm` 会 FileNotFoundError。
