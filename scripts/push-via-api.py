@@ -82,6 +82,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 import urllib.error
 import urllib.request
 
@@ -111,28 +112,46 @@ def git_text(*args):
     return git_out(*args).decode("utf-8", "replace")
 
 
-def api(token, path, method="GET", payload=None):
+def api(token, path, method="GET", payload=None, retries=5):
+    """调用 GitHub API —— **失败自动重试**。
+
+    ★ 为什么必须重试（2026-10-08 真踩）：一次全量重放要发 ~200 个请求、跑好几分钟，
+      中途任何一次 DNS 抖动（实测报 `getaddrinfo failed`）都会让
+      **前面积累的成果全部作废**。所以对「网络异常 / 5xx / 429」做指数退避重试；
+      4xx 是业务错误（401/404/409/422…），重试没意义，直接返回。
+    """
     url = "https://api.github.com" + path
     data = json.dumps(payload).encode("utf-8") if payload is not None else None
-    req = urllib.request.Request(url, data=data, method=method)
-    req.add_header("Authorization", "Bearer " + token)
-    req.add_header("Accept", "application/vnd.github+json")
-    req.add_header("X-GitHub-Api-Version", "2022-11-28")
-    req.add_header("User-Agent", "prompter-api-push")
-    if data:
-        req.add_header("Content-Type", "application/json")
-    try:
-        with urllib.request.urlopen(req, timeout=60) as r:
-            body = r.read().decode("utf-8")
-            return r.status, (json.loads(body) if body.strip() else {})
-    except urllib.error.HTTPError as e:
-        raw = e.read().decode("utf-8", "replace")
+    last = (None, {})
+    for attempt in range(1, retries + 1):
+        req = urllib.request.Request(url, data=data, method=method)
+        req.add_header("Authorization", "Bearer " + token)
+        req.add_header("Accept", "application/vnd.github+json")
+        req.add_header("X-GitHub-Api-Version", "2022-11-28")
+        req.add_header("User-Agent", "prompter-api-push")
+        if data:
+            req.add_header("Content-Type", "application/json")
         try:
-            return e.code, json.loads(raw)
-        except Exception:
-            return e.code, {"raw": raw[:400]}
-    except Exception as e:
-        return None, {"error": "%s: %s" % (type(e).__name__, e)}
+            with urllib.request.urlopen(req, timeout=60) as r:
+                body = r.read().decode("utf-8")
+                return r.status, (json.loads(body) if body.strip() else {})
+        except urllib.error.HTTPError as e:
+            raw = e.read().decode("utf-8", "replace")
+            try:
+                parsed = json.loads(raw)
+            except Exception:
+                parsed = {"raw": raw[:400]}
+            last = (e.code, parsed)
+            if e.code < 500 and e.code != 429:
+                return last
+        except Exception as e:
+            last = (None, {"error": "%s: %s" % (type(e).__name__, e)})
+        if attempt < retries:
+            wait = min(2 ** attempt, 20)
+            print("    · 网络/服务异常，%ds 后重试（%d/%d）：%s"
+                  % (wait, attempt, retries, str(last[1])[:90]))
+            time.sleep(wait)
+    return last
 
 
 # ---------------------------------------------------------------- 本地对象读取
@@ -220,6 +239,8 @@ def upload_blob(token, owner, repo, sha, cache):
         # 理论上 git 的 blob SHA 与 GitHub 一致；不一致说明内容被改动了，必须报出来
         raise RuntimeError("blob SHA 不一致！本地 %s / 远端 %s（内容被篡改？）" % (sha, got))
     cache[sha] = got
+    if len(cache) % 40 == 0:
+        print("    · 已上传 %d 个 blob…" % len(cache))
     return got
 
 
