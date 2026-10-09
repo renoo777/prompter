@@ -5,11 +5,17 @@
     python scripts/gates.py --build    # 再出一次 release 产物（= npm run tauri:build）
 
 四道门槛（见 docs/判断基线.md）：
-  1. cargo test --lib                     期望 107 passed / 6 ignored
-  2. cargo test --lib --no-default-features 期望 91 passed
+  1. cargo test --lib                     期望 112 passed / 6 ignored
+  2. cargo test --lib --no-default-features 期望 96 passed
   3. 上面两次构建零警告
   4. tsc --noEmit 零错 + vite build 通过 + 静态前端检查（STATIC_CHECKS，
-     目前是 check-tooltips.py 与 check-hook-order.py —— 都几毫秒）
+     目前是 check-tooltips.py / check-hook-order.py / check-hover-silent.py /
+     check-glass-mode.py / check-doc-images.py）
+
+★ 期望值只认下面那个 `EXPECT` 字典 —— 这份文件头只是说明，数字以 `EXPECT` 为准。
+  ★ 2026-10-09 真踩：这两行一直停在 107 / 91，而 `EXPECT` 早已是 112 / 96
+    （第十轮 107→112、第十二轮 91→96 都只改了字典）。**两处都在同一个文件里，
+    却没有任何机制保证它们一致** —— 所以上面这句"以 EXPECT 为准"必须留着。
 
 ★ 为什么不写成一串 shell：
   * Git Bash 的 PATH 被截断（没有 /usr/bin），`grep`/`tail` 都不可用；
@@ -70,7 +76,20 @@ STATIC_CHECKS = [
     "check-hook-order.py",
     "check-hover-silent.py",
     "check-glass-mode.py",
+    "check-doc-images.py",
 ]
+
+# ★ 2026-10-09（第十四轮·README 收成产品页）加了第四道 `check-doc-images.py`。
+#   README 这一轮第一次有配图（docs/img/），而**图片路径写错没有任何东西会响** ——
+#   编译 / tsc / 出包 / 其它门槛全都不读 Markdown，本地也没人会一张张点开看。
+#   它纯读文件、几毫秒，所以按"每次必跑"挂在这里。
+#   ★ 已做变异测试：塞一条断链 → 报红 rc=1（且**只报那一条**）；
+#     塞进围栏代码块 / **行内代码**里的示例引用 → 都不报
+#     （`strip_fences()` + `INLINE_CODE` 负责）。
+#     ★ 行内代码那一条是它上线后**第一次真跑就暴露**的漏洞：只剥围栏块时，
+#       `判断基线.md` 里用单反引号举的"图片语法长什么样"的例子被当真引用，
+#       门槛对着 `docs/path` 报了一条假断链。**假阳性比没有门槛更坏**。
+#     修完还原复跑 ✅。
 
 # ★ Windows 上必须写全名：subprocess 走 CreateProcess，会自动补 `.exe`，
 #   但**不会**补 `.cmd` ⇒ 写裸 `npm` 会 FileNotFoundError。
