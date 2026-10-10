@@ -355,6 +355,40 @@ body {
   height: 30px;
 }
 
+/* 有可用更新时，齿轮右上角点一个小圆点。
+ *
+ * ★★ 为什么不新增一颗图标：这一行能分给「标题 + 进度条」的总宽是个定数
+ *    （实测 145px，见下），加一颗图标（30px + 2px 间距）得从标题身上出。
+ *    而"更新"这个**动作**已经有两处入口（顶栏下方那条提示条、设置里的「更新」组），
+ *    这里只需要一个"门后有东西"的信号，信号只要一个点。
+ *
+ * ★ 走 `::after` 绝对定位 ⇒ **一个像素的布局宽度都不占**（按钮仍是 30px）。
+ *    所以 `check-platform-layout.py` 量到的 `topIcons=5`、`titleW`、`progW`
+ *    不会因为多了一个点而变 —— 这也正是选"点"而不是"图标"的验收依据。
+ *
+ * ★ 颜色用 accent（蓝）而不是绿 / 琥珀：本项目里绿＝已生效、琥珀＝受限，
+ *    而这一点想说的是"有一件事等你决定" —— 那是蓝的位置。
+ */
+.topbar .icon-btn.has-update {
+  position: relative;
+}
+
+.topbar .icon-btn.has-update::after {
+  content: "";
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: rgb(var(--accent));
+  /* 描一圈底色：不描的话它会压在齿轮的笔画上糊成一团，
+   * 而"一个糊掉的小点"比没有点更糟 —— 用户会以为那是渲染坏了。 */
+  box-shadow: 0 0 0 1.5px rgb(var(--panel) / 0.95);
+  /* 纯装饰，绝不吃鼠标事件（`has-update` 那一下要落到按钮本体上）。 */
+  pointer-events: none;
+}
+
 /*
  * ★ 阈值本轮**升到 540px** —— 这是"一行装完全部控件"的另一面代价，写清楚：
  *
@@ -2242,6 +2276,149 @@ input[type="range"]:active::-webkit-slider-thumb {
   gap: 10px;
   padding: 8px 10px;
   border-top: 1px solid rgb(var(--fg) / 0.08);
+}
+
+/* ---------------------------------------------------------------- 更新提示条 */
+
+/* 挂在顶栏下方的一条细横条 —— **在正常文档流里**，不是浮层。
+ *
+ * ★★ 为什么它不是浮层（对照 `.findbar` 那种 `position: absolute`）：
+ *   浮层会**盖住正文开头**。查找是"用户主动唤出、用完就收"的，盖一下无所谓；
+ *   更新提示是**常驻**的（用户可能整场会都不理它）——
+ *   常驻的东西盖住稿子，是这个产品最忌讳的一条。
+ *   ⇒ 所以在的时候正文从它下面开始；不在的时候（绝大多数时候）
+ *     这个节点根本不存在，版面与从前逐像素一致。
+ *
+ * ★ 高度刻意做薄（28px）：它是一条**通知**，不是一块面板。
+ *   它占的每一像素都是从稿子身上出的，所以只放得下"一句话 + 两颗按钮"。
+ */
+.update-bar {
+  position: relative;
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  /* ★ 必须自己让开顶栏那道高度：`.topbar` 是 `position: absolute; top: 0`
+   *   （见上面的 `.topbar` 与 `.viewport` 的 `padding-top`），所以流内的
+   *   第一个子元素是从 y=0 开始的 —— 不给这行 margin 的话，这条提示条
+   *   会被顶栏**整个盖住**：DOM 里有（桩量得到 `updateBar=yes`、高度 28），
+   *   屏幕上什么都不出现。这正是"只有出图看得见"的那类排版 bug。 */
+  margin-top: var(--h-top);
+  height: 28px;
+  padding: 0 8px 0 10px;
+  background: rgb(var(--accent) / 0.1);
+  border-bottom: 1px solid rgb(var(--accent) / 0.22);
+  font-size: 11.5px;
+  color: rgb(var(--fg));
+}
+
+/* 提示条已经把顶栏那道位让过了，正文就不必再让第二遍 ——
+ * 不让回去的话，两者会叠出 60px 空白，稿子被白白推下去。
+ * ★ 判据里带 `:not(.collapsed)`：收起态那条子虽然 `display: none`，
+ *   但节点还在 DOM 里，`:has()` 照样命中 —— 少了这个限定，
+ *   收起态下正文会贴着顶栏开始（顶栏是浮层，会盖住第一行）。 */
+.app:not(.collapsed):has(.update-bar) .viewport {
+  padding-top: 14px;
+}
+
+/* 收起态下窗口只有 46px —— 这条横条会把它撑成一截怪东西，而且
+ * 那条 46px 的栏里本来就点不到它。★ 但"有更新"这件事并没有因此消失：
+ * 齿轮上那颗圆点还在，点开设置就能看到「更新」那一组。 */
+.app.collapsed .update-bar {
+  display: none;
+}
+
+/* 消息占满剩下的宽度，太长就省略 —— 但**不换行**：
+ * 这条子一旦长到两行，就在跟稿子抢高度了。 */
+.update-bar .ub-msg {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 「新版本 x.y.z 可用」「更新失败」这几个字要能一眼抓到。
+ * 不换色、不加底色：这一行的颜色全是 accent，再加一层强调就花掉了。 */
+.update-bar .ub-strong {
+  font-weight: 600;
+}
+
+.update-bar .ub-actions {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+/* 这条子上自己的小按钮 —— 与 `.btn` 分开写：那个是设置面板里的尺寸（30px 高），
+ * 放进 28px 的横条里会把它撑开。 */
+.update-bar .ub-btn {
+  height: 20px;
+  padding: 0 9px;
+  border: 1px solid rgb(var(--fg) / 0.16);
+  border-radius: var(--r-pill);
+  background: transparent;
+  color: rgb(var(--fg-dim));
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+  transition: background var(--t-fast) ease, color var(--t-fast) ease;
+}
+
+.update-bar .ub-btn:hover {
+  background: rgb(var(--fg) / 0.1);
+  color: rgb(var(--fg));
+}
+
+.update-bar .ub-btn.primary {
+  border-color: transparent;
+  background: rgb(var(--accent));
+  color: #fff;
+}
+
+.update-bar .ub-btn.primary:hover {
+  background: rgb(var(--accent) / 0.88);
+  color: #fff;
+}
+
+/* 进度线：贴在整条的底边上。
+ *
+ * ★ 只动 `width`（`transform` 也行，但这条基线要跟父元素对齐，用 width 最直白）。
+ * ★ 它**不是**为了让用户盯着看 —— 是为了回答"它还在动吗"。
+ *   没有它，一次几十秒的下载在界面上和"卡死了"完全一样。 */
+.update-bar .ub-track {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -1px;
+  height: 2px;
+  background: rgb(var(--fg) / 0.08);
+  overflow: hidden;
+}
+
+.update-bar .ub-fill {
+  height: 100%;
+  background: rgb(var(--accent));
+  transition: width var(--t-fast) linear;
+}
+
+/* 总长未知（清单没给 contentLength）：**不编一个百分比**。
+ * 画成一条左右来回的短条，说"在动、但不知道还要多久"。
+ * 编一个假百分比的话，它会停在 99% 不动 —— 那看起来就是卡死，
+ * 而真相是它一直在正常下载。 */
+.update-bar .ub-fill.unknown {
+  width: 30%;
+  animation: ub-indeterminate 1.1s ease-in-out infinite;
+}
+
+@keyframes ub-indeterminate {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(333%);
+  }
 }
 
 /* ---------------------------------------------------------------- 一次性提示 */

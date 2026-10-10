@@ -250,8 +250,22 @@ export function TopBar() {
            判据是"这一行有没有被撑爆"，不是"数量对不对得上 5"。
       */}
       <button
-        className={`icon-btn${state.settingsOpen ? " active" : ""}`}
+        className={`icon-btn${state.settingsOpen ? " active" : ""}${
+          state.update ? " has-update" : ""
+        }`}
         data-panel-toggle
+        /*
+         * ★★ 有可用更新时**不新增一颗图标**，只在齿轮右上角点一个小圆点。
+         *   这一行能分给「标题 + 进度条」的宽度是个定数（实测 145px，
+         *   见 styles.css `.topbar .icon-btn` 那段），加任何一颗图标都要从
+         *   标题身上出。而"有更新"这件事的信息量只有一个点：
+         *   它不需要新动作，只需要让用户知道**该去设置里看一眼**。
+         *   ⇒ 圆点走 `::after` 绝对定位，**不占布局宽度**（按钮仍是 30px）。
+         *
+         * ★ `aria-label` 只在有更新时补上版本号 —— 读屏通道要说得出
+         *   "这扇门后面有东西"，否则那个圆点对读屏用户等于不存在。
+         */
+        aria-label={state.update ? `设置（有可用更新 ${state.update.version}）` : "设置"}
         onClick={() => dispatch({ type: "SETTINGS", open: !state.settingsOpen })}
       >
         <IconSettings size={16} />

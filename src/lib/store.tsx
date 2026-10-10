@@ -25,6 +25,7 @@ import type {
 } from "../types";
 
 import { readColorRgb } from "./readColors";
+import type { FoundUpdate } from "./update";
 
 /**
  * 隐身的**用户意图**（三态）。
@@ -73,6 +74,21 @@ export interface State {
   modelsDir: string;
   foundModels: ModelPaths[];
   appVersion: string;
+
+  /**
+   * 发现的新版本。`null` ＝ 此刻没有待处理的更新。
+   *
+   * ★ 它**不是**"开关"，是"有一条更新摆在这儿"这个事实 —— 顶栏那颗
+   *   小圆点、设置里那一行、顶栏下方那条提示条，读的都是它一个。
+   *   三者显示同一件事，就不可能出现"点了圆点但设置里说没有"。
+   */
+  update: FoundUpdate | null;
+  /** 用户已经点了「更新」，正在下载/安装。 */
+  updateBusy: boolean;
+  /** 下载进度 0..1；`null` ＝ 总长未知（不编一个假百分比）。 */
+  updateProgress: number | null;
+  /** 更新链路上的一次性错误（下载失败、验签失败…）。 */
+  updateError: string | null;
   /** 可载入的稿件扩展名（不含点）—— 由后端给出，前端只消费。 */
   scriptExts: string[];
   /** 上面那份清单给用户看的样子。 */
@@ -193,6 +209,10 @@ const initialState: State = {
   modelsDir: "",
   foundModels: [],
   appVersion: "",
+  update: null,
+  updateBusy: false,
+  updateProgress: null,
+  updateError: null,
   // 兜底值只在 bootstrap 回来之前生效（那一瞬间）。写成和 Rust 侧
   // `SCRIPT_EXTS` 一致，是为了"打开应用的头 50 毫秒里点开对话框"
   // 也能选到正确的一批 —— 虽然几乎撞不上，但兜底值本身不该是错的。
@@ -253,7 +273,21 @@ export type Action =
   | { type: "DEMO"; active: boolean; paused?: boolean }
   | { type: "COLLAPSED"; collapsed: boolean }
   /** 「收起动画进行中」。与 `COLLAPSED` 分开，理由见 `State.collapsing`。 */
-  | { type: "COLLAPSING"; on: boolean };
+  | { type: "COLLAPSING"; on: boolean }
+  /**
+   * 更新链路的四个字段合成**一个**动作。
+   *
+   * ★ 为什么不是四条：它们永远一起变（发现新版本之后才谈得上进度与错误；
+   *   放弃时四样都得归零）。拆开之后"记得顺手清掉另外三样"就成了一条
+   *   要靠人记的规矩 —— 而本项目里凡是靠记的规矩都不成立。
+   *   漏清的后果很具体：点了「稍后」，圆点还亮着、再点又弹出旧版本号。
+   */
+  | {
+      type: "UPDATE";
+      patch: Partial<
+        Pick<State, "update" | "updateBusy" | "updateProgress" | "updateError">
+      >;
+    };
 
 function reducer(state: State, action: Action): State {
   switch (action.type) {
@@ -432,6 +466,9 @@ function reducer(state: State, action: Action): State {
 
     case "COLLAPSING":
       return { ...state, collapsing: action.on };
+
+    case "UPDATE":
+      return { ...state, ...action.patch };
 
     default:
       return state;

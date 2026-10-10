@@ -816,6 +816,11 @@ pub(crate) fn apply_glass_mode(app: &AppHandle, mode: state::GlassMode) {
         state: None,
         radius: p.radius,
         color: Some(Color(p.color[0], p.color[1], p.color[2], p.color[3])),
+        // tauri-utils 2.10 给这个结构体加了 `interactive: bool`
+        // （macOS 26+ 的 Liquid Glass 交互反馈）。我们用的是 Windows Acrylic /
+        // macOS hudWindow，都不是 Liquid Glass，所以给 `false` ——
+        // 也就是「升级前的行为」。★ 不是选了个新值，是**没有新值可要**。
+        interactive: false,
     });
 
     let Some(win) = app.get_webview_window("main") else {

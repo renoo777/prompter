@@ -7,6 +7,7 @@ import { stopPrompting, togglePrompting } from "../lib/prompting";
 import { READ_COLORS, effectiveReadColor, readColorRgb } from "../lib/readColors";
 import { useSendToTaskbar } from "../lib/sendToTaskbar";
 import { resolveTheme, useApp } from "../lib/store";
+import { checkForUpdate, installPendingUpdate } from "../lib/update";
 import {
   micVerdictText,
   supportNote,
@@ -454,6 +455,7 @@ export function SettingsDrawer() {
     diag,
     asrStatus,
     busy,
+    updateBusy,
     settingsOpen,
     scriptExts,
   } = state;
@@ -483,6 +485,16 @@ export function SettingsDrawer() {
   const [promptBusy, setPromptBusy] = useState(false);
   /** 当前是否全屏 —— 只为了让这一行说得出**现在**是哪种形态。 */
   const [fullscreen, setFullscreen] = useState(false);
+  /**
+   * 「检查更新」按钮正在等后端。
+   *
+   * ★ 为什么要一个本地标志、而不复用 `state.updateBusy`：
+   *   那个表示的是**正在装**（会替换整个应用），这个表示的是**正在查**。
+   *   两者都能让按钮变灰，但说出口的话完全不同 ——
+   *   "正在检查…"和"正在下载更新…"混成一句，用户就分不清
+   *   "它在忙什么、我要不要等"。
+   */
+  const [updateChecking, setUpdateChecking] = useState(false);
 
   /**
    * 置顶状态。
@@ -1875,6 +1887,61 @@ export function SettingsDrawer() {
                 {stealthLabel} · {state.collapsed ? "已收起" : "展开"}
                 {state.ctActive ? " · 穿透中" : ""}
               </span>
+            }
+          />
+        </Group>
+
+        {/* ======================================================== 更新
+         *
+         * ★ 它是**独立的一组**，没有塞进「更多」里 —— 理由与下面「支持作者」
+         *   同族不同源：塞进「更多」就得多点一次折叠才看得见，而
+         *   "有没有新版本"恰恰是用户会**专门来找**的东西；让他再展开一次，
+         *   等于把答案藏在第二个抽屉里。
+         *
+         * ★ 位置挑在「更多」**之后**：「更多」默认收起，所以这一组实际上
+         *   紧挨着「窗口」，点开设置就能看到；而它又不会挤到「提词」「跟读」
+         *   那几组真正天天要用的设置上面去。
+         *
+         * ★ 组里只有一行、且**没有小字**（同设置页全局判据）：版本号在标签里、
+         *   动作在按钮上、状态也在按钮文字里（"更新中 42%"）——
+         *   三件事各占一个位置，不需要谁去解释谁。
+         *
+         * ★ 它与顶栏下方那条提示条是**同一套实现**（`lib/update.ts` 里那两个
+         *   函数），不是两份：两处各写一遍迟早漂成"提示条上点得动、这里点不动"。
+         *   这里多出来的是**主动检查**那一半 —— 提示条只在"已经有更新"时才存在。
+         */}
+        <Group title="更新">
+          <Row
+            label={`当前版本 ${state.appVersion || "—"}`}
+            right={
+              <button
+                className="btn"
+                disabled={updateBusy || updateChecking}
+                onClick={() => {
+                  // 已经有更新待装 ⇒ 这一下就是"装它"；否则是"再查一遍"。
+                  // ★ 两件事共用一颗按钮，判据只有"手里有没有东西"——
+                  //   分成两颗按钮就得回答"我该点哪一颗"，而那个问题
+                  //   界面上没有地方能说清楚。
+                  if (state.update) {
+                    void installPendingUpdate(dispatch);
+                    return;
+                  }
+                  setUpdateChecking(true);
+                  void checkForUpdate(dispatch).finally(() =>
+                    setUpdateChecking(false),
+                  );
+                }}
+              >
+                {updateBusy
+                  ? state.updateProgress === null
+                    ? "更新中…"
+                    : `更新中 ${Math.round(state.updateProgress * 100)}%`
+                  : updateChecking
+                    ? "检查中…"
+                    : state.update
+                      ? `更新到 ${state.update.version}`
+                      : "检查更新"}
+              </button>
             }
           />
         </Group>

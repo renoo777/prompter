@@ -1,6 +1,6 @@
 [package]
 name = "prompter"
-version = "0.1.0"
+version = "0.1.1"
 description = "投屏隐身提词器 — 语音跟随滚动，会议共享时不可见"
 authors = ["超人强"]
 edition = "2021"
@@ -31,6 +31,11 @@ tauri = { version = "2", features = ["macos-private-api", "tray-icon"] }
 tauri-plugin-global-shortcut = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-log = "2"
+# 更新装完之后要重启应用。Windows 上 NSIS 安装器自己会重启（见 updater 的
+# `nsis_restart_after_install_args` 给的 `/R`），但 macOS 上安装只是把
+# .app 换掉，**不重启就还是旧进程** —— 所以 `relaunch()` 必须由我们调。
+# 它来自这个插件，Tauri 2 里 `@tauri-apps/api/process` 已经不存在了。
+tauri-plugin-process = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
@@ -57,6 +62,9 @@ cpal = { version = "0.15", optional = true }
 # 在无法真机验证的情况下写出的绑定很可能对不上版本。改用 runtime FFI + libc。
 [target.'cfg(target_os = "macos")'.dependencies]
 libc = "0.2"
+
+[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
+tauri-plugin-updater = "2"
 
 [lints.rust]
 # `prompter_check_macos` 不是 Cargo 的保留 cfg 名，不声明的话每次开这个检查

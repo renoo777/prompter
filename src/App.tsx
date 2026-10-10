@@ -7,8 +7,10 @@ import { SettingsDrawer } from "./components/SettingsDrawer";
 import { FindBar } from "./components/FindBar";
 import { PasteImport } from "./components/PasteImport";
 import { TopBar } from "./components/TopBar";
+import { UpdateBar } from "./components/UpdateBar";
 import { api, events, errText } from "./lib/api";
 import { applyLayoutVars, useApp, watchSystemTheme } from "./lib/store";
+import { findUpdateQuietly } from "./lib/update";
 import type { AppConfig } from "./types";
 
 /** 这个元素此刻在窗口里占的那块矩形；**不该算可交互区**时返回 `null`。
@@ -224,6 +226,32 @@ export default function App() {
 
     return () => {
       cancelled = true;
+    };
+  }, [dispatch]);
+
+  // ---- 启动时查一次有没有新版本 ----
+  //
+  // ★ 为什么延后 3 秒：它和 bootstrap 抢的是同一条网络、同一个主线程。
+  //   刚开窗那几百毫秒里用户要的是"稿子出现"，一次 HTTP 往返插在那儿
+  //   只会把"能开始念"的时刻往后推。3 秒之后窗口已经稳定、稿件也在了。
+  //
+  // ★ 为什么走**静默**那条（`findUpdateQuietly`，不是 `findUpdate`）：
+  //   这一次是我们自己发起的，用户没问过。断网、还没发过 Release、
+  //   清单地址临时 404 —— 都会让它抛，但它们没有一条是用户此刻该知道的事。
+  //   真正的"查不动"由设置里那颗「检查更新」如实报告 —— 在那里用户是主动问的，
+  //   沉默才是最糟的回答。
+  useEffect(() => {
+    let cancelled = false;
+    const t = window.setTimeout(() => {
+      void (async () => {
+        const found = await findUpdateQuietly();
+        if (cancelled || !found) return;
+        dispatch({ type: "UPDATE", patch: { update: found } });
+      })();
+    }, 3000);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(t);
     };
   }, [dispatch]);
 
@@ -449,6 +477,12 @@ export default function App() {
         底栏取消之后，正文因此多出 82px（274px 窗口里的 30%）。
       */}
       <TopBar />
+      {/*
+        更新提示条。★ 它在**正常文档流**里（不是浮层），所以在的时候
+        正文从它下面开始 —— 常驻的东西绝不盖住正在念的字。
+        没有待安装的更新时它渲染 `null`，整个节点都不存在。
+      */}
+      <UpdateBar />
       {/*
         稿件区始终挂载，收起时由 CSS 收成 0 高 —— 不卸载的原因：
         卸载会丢掉滚动位置，展开后用户会看到稿子开头而不是刚才念到的地方。

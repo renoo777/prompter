@@ -24,6 +24,9 @@
  *                         报 donateQr/donateQrW/openedUrl，图有没有
  *                         解码出来看收尾的 donateImgOkLate）
  *   &guidescroll=<px>     把抽屉正文滚到指定位置（长文要往下翻才看得到下面几组）
+ *   &update=<版本号>      让桩假装查到一个新版本（默认报"没有更新"，那才是常态）。
+ *                         ★ 必须再配 `&settle=3200` —— 前端启动后要等 3 秒才查，
+ *                           不配的话量到的是"提示条还没长出来"，看着像功能没做。
  *
  * ★ 第十一轮起**不再有 `hover=`**：提示整个删了，没有"悬停才出现"的东西
  *   可截。`tap=` 报的是「序号 + 名字」（`iconName`），因为按位置找的代价是
@@ -690,6 +693,35 @@ window.__TAURI_INTERNALS__ = {
       return Promise.resolve();
     }
     if (cmd.startsWith("plugin:window|")) return Promise.resolve(undefined);
+    /*
+     * 应用内更新。
+     *
+     * ★ 默认**报"没有更新"**（返回 `undefined`，前端 `check()` 于是拿到 `null`）
+     *   —— 那才是真正的常态，而且它让预览出来的界面与"还没发过新版"时逐像素一致。
+     *   这一点很重要：如果不接这个分支、让 `COMMANDS` 兜底，返回值同样是 undefined，
+     *   但那是"碰巧一样"，下次谁改了兜底就会静默变味。
+     *
+     * ★ 想看提示条长什么样，加 `update=<版本号>`：桩就报一个新版本，
+     *   前端那条提示条会在启动后 3 秒（`App.tsx` 里的延后，产品决定）浮出来。
+     *   ⇒ **必须再配 `settle=3200`** 才截得到 —— 这是桩唯一的用法要点。
+     *   不配的话量到的是"提示条还没长出来"，看起来像功能没做。
+     */
+    if (cmd === "plugin:updater|check") {
+      const v = params.get("update");
+      return Promise.resolve(
+        v
+          ? {
+              rid: ++cbId,
+              currentVersion: "0.1.0",
+              version: v,
+              body: "（桩给的更新说明）",
+            }
+          : undefined,
+      );
+    }
+    if (cmd === "plugin:updater|close") return Promise.resolve();
+    if (cmd.startsWith("plugin:updater|")) return Promise.resolve(undefined);
+    if (cmd.startsWith("plugin:process|")) return Promise.resolve(undefined);
     const fn = COMMANDS[cmd];
     if (fn) return Promise.resolve(fn(args));
     return Promise.resolve(undefined);
@@ -2470,6 +2502,44 @@ waitFor(".topbar .icon-btn", () => {
         `donateImgSrc=${nowrap(donorQrs[0].getAttribute("src") || "none")}`,
       );
     }
+
+    /*
+     * 更新提示条 + 齿轮上那颗圆点。
+     *
+     * ★ 为什么这两项必须量，而不是"出图看一眼就行"：
+     *   ① 提示条是**条件渲染**的 —— 没有更新时整块 DOM 都不存在。
+     *      所以"默认不出现"这件事只有 `updateBar=no` 能证明；在截图里
+     *      "没有那条子"和"这条子根本没做出来"长得一模一样。
+     *   ② 齿轮上那个圆点走 `::after` 伪元素，**DOM 里查不到节点**，
+     *      只能查那个 class。而"它占不占布局宽度"是这一轮唯一的版面风险
+     *      （顶栏的宽度预算是定数，多 6px 就要从标题嘴里出），
+     *      所以下面把齿轮宽度一并量出来对。
+     */
+    const ub = document.querySelector(".update-bar");
+    parts.push(`updateBar=${ub ? "yes" : "no"}`);
+    parts.push(`updateBarH=${ub ? Math.round(ub.getBoundingClientRect().height) : 0}`);
+    if (ub) {
+      const msg = ub.querySelector(".ub-msg");
+      parts.push(`ubMsg=${msg ? nowrap(msg.textContent || "") : "none"}`);
+      parts.push(`ubBtns=${ub.querySelectorAll(".ub-btn").length}`);
+      /* 几何：这条子必须真正**在顶栏下面**，而且正文要排在它下面。
+       * ★ 这条断言是被一次出图逼出来的：`.topbar` 是 absolute，流内的
+       *   提示条如果不给自己 margin，就会从 y=0 开始、被顶栏整个盖住
+       *   —— 那时 DOM 里什么都量得到（`updateBar=yes`、高度 28），
+       *   只有真去读几何才发现它在 y=0。 */
+      const ur = ub.getBoundingClientRect();
+      parts.push(`ubTop=${Math.round(ur.top)}`, `ubBottom=${Math.round(ur.bottom)}`);
+    }
+    const vp = document.querySelector(".viewport");
+    if (vp) {
+      const vr = vp.getBoundingClientRect();
+      parts.push(`vpTop=${Math.round(vr.top)}`, `vpPadTop=${Math.round(
+        parseFloat(getComputedStyle(vp).paddingTop) || 0,
+      )}`);
+    }
+    const gear = document.querySelector(".topbar .icon-btn.has-update");
+    parts.push(`gearDot=${gear ? "yes" : "no"}`);
+    parts.push(`gearW=${gear ? Math.round(gear.getBoundingClientRect().width) : 0}`);
 
     parts.push(`vw=${innerWidth}`, `vh=${innerHeight}`);
     } catch (e) {

@@ -75,6 +75,23 @@ pub fn run() {
                 .build(),
         )
         .plugin(tauri_plugin_dialog::init())
+        /*
+         * 应用内更新。装完之后同事不必再去 GitHub 手动下载安装包。
+         *
+         * ★ 公钥与更新清单地址**只在 `tauri.conf.json` 的 `plugins.updater`
+         *   里写一份**，这里刻意不用 `.pubkey(...)` 再写一遍 —— 两处各写一份
+         *   就会漂成"配置换了、代码里还是旧公钥"，而那种错**只在真机上、
+         *   只在真有新版本时才暴露**（验签失败），本地怎么跑都是好的。
+         *
+         * ★ 验签是强制的、关不掉的：公钥换错 ⇒ 更新装不上，
+         *   而不是"装上了但没验" —— 这是 Tauri 刻意的设计，不是可以调的选项。
+         *
+         * ★ 与 `tauri-plugin-process` 是一对：Windows 上 NSIS 安装器自己带
+         *   `/R` 重启（见 updater 的 `nsis_restart_after_install_args`），
+         *   而 macOS 上装完必须由前端调 `relaunch()`，否则跑的还是旧进程。
+         */
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(move |app, shortcut, event| {

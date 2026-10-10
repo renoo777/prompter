@@ -42,6 +42,45 @@
 `releases/latest/download/` 直链。两个要点：资产上传必须走 **`uploads.github.com`**
 （不是 `api.github.com`），body 是**文件原始字节**；同名 tag / Release / 资产**幂等复用**，重跑即换新包。
 
+---
+
+### ★ 发一版带「应用内更新」的 Release（两条命令）
+
+```bash
+# 1) 出包 —— ★ 必须带签名私钥，否则只会产出安装包、一个 .sig 都没有
+export TAURI_SIGNING_PRIVATE_KEY="$(cat ~/.tauri/prompter.key)"
+export TAURI_SIGNING_PRIVATE_KEY_PASSWORD=""
+node node_modules/@tauri-apps/cli/tauri.js build --bundles nsis
+
+# 2) 发布 —— 安装包 + 更新包 + 更新清单 三样一起上
+python scripts/make-release.py --repo prompter --tag v0.1.1 \
+    --asset src-tauri/target/release/bundle/nsis/Prompter_0.1.1_x64-setup.exe \
+    --updater-artifact src-tauri/target/release/bundle/nsis/Prompter_0.1.1_x64-setup.exe \
+    --updater-target windows-x86_64 \
+    --notes docs/release-notes-v0.1.1.md
+```
+
+清单落在 `releases/latest/download/latest.json` —— **同事机器上装的软件轮的就是这个固定地址**，
+所以**每次发版都必须重传它**。漏了它不会报错，只表现为「同事那边永远显示"已是最新"」。
+
+★ 三个坑（都是本轮实测踩到、且**症状会伪装成"功能没做"**的那种）：
+
+1. **私钥要用 `TAURI_SIGNING_PRIVATE_KEY` 传「文件内容」**，不是 `..._PATH`。
+   实测给 `TAURI_SIGNING_PRIVATE_KEY_PATH` 时，CLI 报
+   `A public key has been found, but no private key` —— **它是先成功打完安装包、
+   再在这一步中止的**，所以你会以为打包成功了，其实没有 `.sig`；
+   没有 `.sig` ⇒ 更新**永远装不上**（验签强制）。
+2. **Windows 的「更新包」就是 `-setup.exe` 本身**，没有 `.nsis.zip`（那是 Tauri v1 形态）。
+   详见 `scripts/make-release.py` 文件头那一节。所以你会在 `--asset` 和
+   `--updater-artifact` 里**填同一个文件** —— 脚本内部会跳过第二次上传。
+3. **不要用 `npm run tauri:build` 出包**：它写死 `tauri build --no-bundle`，
+   命令行上再传 `--bundles` 会被**静默压掉**（命令成功、只出裸 exe、无安装包无 `.sig`）。
+   出包只能走上面那条 `node .../tauri.js build --bundles nsis`。
+
+> ⚠️ **带 updater 的那一版（v0.1.1）仍必须人工装一次。**
+> 同事装的旧版里**没有** updater，它不可能发现新版本 —— 这是 bootstrap 的必然代价，
+> 不是 bug。从这一版之后才全自动。**交付时要把这句话说明白**，否则他会以为"说好的自动更新呢"。
+
 ### Mac 上怎么拿
 
 ```bash
