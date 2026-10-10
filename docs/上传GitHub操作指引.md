@@ -11,6 +11,37 @@
 | 内容核验 | ✅ **远端 HEAD 的 tree SHA == 本地 HEAD 的 tree SHA** ⇒ 文件内容与权限位逐字节一致 |
 | `target/`(18GB) / `node_modules/` / `dist/` | ✅ 全部未上传 |
 
+### ★ 2026-10-10 更新：网络结论被修正，「读通、写不通」
+
+上一轮写的是「`github.com:443` ❌ 超时」，**这个说法不准确**。复测后修正为：
+
+| 操作 | 结果 |
+|---|---|
+| `git ls-remote` / `git fetch`（HTTP **GET**） | ✅ **通** |
+| `git push`（HTTP **POST** `git-receive-pack`） | ❌ **挂住**（89s 无任何响应，被 `timeout` 杀掉） |
+| python/urllib 探测 `github.com` | ✅ HTTP 200 |
+| `api.github.com` ／ `uploads.github.com` | ✅ 都通 |
+
+⇒ **不是"整站不通"，是"读通、写不通"。** `git push` 卡在「拿到凭据之后、发 POST 之前」，
+所以这不是认证问题也不是 DNS 问题，就是 POST 那一跳过不去。
+
+> ⚠️ **诊断时的一个陷阱**：git 取凭据前会先跑一次 `git credential-helper-selector`
+> （PortableGit 自带的 helper 选择器，可能弹 GUI），**光这一步就吃掉约 90 秒**。
+> 用 `GIT_TRACE=1` 看时间戳时，别把这段等待误判成"网络太慢" —— 它跟网络无关。
+
+**结论不变：推代码仍然走 `push-via-api.py`。** 而且本轮这一步真踩出了一个 bug，已修：
+
+> ★ **删除条目的 `mode` 必须是合法值。** Git Data API 建 tree 时，
+> **即使 `sha=null`（表示删除）也会校验 `mode`**；而 git 对「删除」给出的 `new_mode`
+> 是 `000000`（全零）⇒ 原样传会被 **422 `Must supply a valid tree.mode`** 拒掉，
+> 并**中止整条重放**（前面已建的对象全部变成不可达垃圾，白跑）。
+> 修法：删除条目固定发 `"100644"`（`sha=null` 时 mode 语义上无意义）。
+> 这就是「本地有提交**删过文件**时才暴露」的那类 bug —— 上一轮重放的 9 条恰好没删过文件。
+
+**新增工具 `scripts/make-release.py`**：出包之后发 Release + 上传安装包，落到
+`releases/latest/download/` 直链。两个要点：资产上传必须走 **`uploads.github.com`**
+（不是 `api.github.com`），body 是**文件原始字节**；同名 tag / Release / 资产**幂等复用**，重跑即换新包。
+
 ### Mac 上怎么拿
 
 ```bash

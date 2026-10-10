@@ -15,6 +15,26 @@
 `Recv failure: Connection was reset` 或 `Could not connect to server`。
 **这不是认证问题**（认证早就验过了），是**网络**问题。
 
+★ **2026-10-10 复测修正**：上面「`github.com` 不通」的说法不准确 —— 实际是
+**读通、写不通**：
+
+| 操作 | 结果 |
+|---|---|
+| `git ls-remote` / `git fetch`（HTTP **GET**） | ✅ 通 |
+| `git push`（HTTP **POST** `git-receive-pack`） | ❌ **挂住**（89s 无响应，被 `timeout` 杀掉） |
+| `uploads.github.com` | ✅ 通（release 资产上传走它，不是 api.github.com） |
+
+⇒ **推代码仍然只能走本脚本。**
+
+> ⚠️ 诊断陷阱：git 取凭据前会先跑一次 `git credential-helper-selector`
+> （PortableGit 自带的 helper 选择器，可能弹 GUI），**单独这一步就要 ~90 秒**。
+> 用 `GIT_TRACE=1` 看时间戳时别把它误算成"网络慢"。
+
+★ **已知限制：删除条目的 `mode` 必须合法。** 建 tree 时**即使 `sha=null`（表示删除）
+也会校验 `mode`**，而 git 对删除给出的 `new_mode` 是 `"000000"` ⇒ 原样传会被
+**422 `Must supply a valid tree.mode`** 拒掉并中止整条重放（2026-10-10 真踩，
+本地有"删过文件"的提交时才会暴露）。处置见下方 `diff_raw` 消费处。
+
 GitHub 的 Git Data API 全部挂在 api.github.com 上，可以**逐对象**把仓库建出来：
 blobs → trees → commits → ref，最后更新分支指针。**完全不经过 github.com**。
 
