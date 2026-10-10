@@ -1410,6 +1410,103 @@ body {
   background: rgb(var(--hair) / 0.08);
 }
 
+/* ------------------------------------------------------- 支持作者（打赏）
+ *
+ * ★ 为什么双码**并排**而不是上下堆叠：这一块的高度直接决定抽屉要滚多久，
+ *   而两张码的用途是对等的 —— 并排才能让"挑一个扫"一眼看完。
+ * ★ 为什么用 grid + `minmax(128px, 1fr)` 而不是 flex-wrap：两列的宽度必须
+ *   **相等**，否则两张码一大一小，看起来像其中一个更"重要"。
+ *   窗口被拉窄时（`.drawer` 有 `max-width: 100%`）会自动退成上下各一张，
+ *   不需要再写一条媒体查询。
+ */
+.donate {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 12px var(--row-pad) 14px;
+}
+
+.donate-pitch {
+  margin: 0;
+  font-size: 11.5px;
+  line-height: 1.62;
+  color: rgb(var(--fg-dim));
+}
+
+.donate-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(128px, 1fr));
+  gap: 10px;
+}
+
+/* 卡片里再抬一层的面 —— 与项目别处的嵌套面用同一个 token
+ * （`--card-hi`），而不是随手写一个透明度：面与面的层级只有一处定义，
+ * 换主题时才不会有一块"跟不上"。 */
+.donate-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 8px;
+  border-radius: var(--r-card);
+  background: rgb(var(--card-hi) / 0.7);
+}
+
+.donate-name {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: rgb(var(--fg));
+}
+
+/*
+ * 码图本身。
+ *
+ * ★ `background: #fff` 是**必须**的，不是装饰：收款码的静区是白的，而窗口
+ *   外壳半透明（`--win-alpha`）、卡片底又是深色 —— 底色一透过来对比度就掉了，
+ *   手机更难扫。两张图自带白底，这层白是双保险。
+ * ★ `aspect-ratio` + `object-fit: contain`：两张原图比例并不完全一样
+ *   （微信 513×514、支付宝 919×881），不锁比例的话两张卡会一高一低，
+ *   并排就显得没对齐。
+ */
+.donate-qr {
+  display: block;
+  width: 100%;
+  max-width: 148px;
+  aspect-ratio: 1 / 1;
+  object-fit: contain;
+  border-radius: 6px;
+  background: #fff;
+  user-select: none;
+}
+
+/*
+ * 收款人 —— **常驻可见**，这是本项目"信号只换位置、不消失"的一个落点。
+ *
+ * 禁掉一切悬停提示之后，"付款前核对收款人"这条防错付信息没有别的出口：
+ * 它是**必须在付款那一刻看得见**的话，收进「更多 › 功能介绍」反而等于没有。
+ * 放在码下面、用 faint 色降一档，不跟码抢视线。
+ */
+.donate-nick {
+  font-size: 11px;
+  line-height: 1.5;
+  text-align: center;
+  color: rgb(var(--fg-faint));
+  word-break: break-all;
+}
+
+/* 「截图之后再扫认不出来」—— 它替换掉了参考实现里的「保存原图」按钮：
+ * 那个按钮在 Tauri 的 webview 里会**静默失效**（没有下载处理器），
+ * 而"对着屏幕扫"本来就不需要它。见 SettingsDrawer 里 DONATE 的注释。 */
+.donate-note {
+  font-size: 11px;
+  line-height: 1.55;
+  color: rgb(var(--fg-faint));
+}
+
+.donate-foot {
+  display: flex;
+}
+
 /* 会前自检的状态点。
  * 三档颜色是**唯一允许出现在设置面板里的彩色** —— 因为它们表达的是
  * "能不能开讲"这件事本身，而不是装饰。 */

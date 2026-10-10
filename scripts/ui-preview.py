@@ -101,8 +101,30 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
 
 def serve(port: int):
+    """静态服务。**必须是多线程的** —— 见下面那条教训。
+
+    ★★ 2026-10-10 实测踩到（在验「支持作者」的收款码时）：
+
+    原来是 `socketserver.TCPServer`（单线程），而 `/__hold?ms=N` 的实现是
+    **sleep N 毫秒再回一个空脚本**。单线程下这一睡会占住唯一的处理线程 ——
+    于是**在 hold 期间发起的所有请求都被堵在门外**。
+
+    为什么以前没暴露：`index.html` 的 head 资源（CSS / module JS / 桩脚本）
+    都在解析阶段就被请求了，那时 `/__hold`（挂在 `</body>` 前的 async 脚本）
+    还没轮到，所以关键资源全是先拿到的。**只有"解析之后才发起"的资源会中招**
+    —— 例如 React 交互后才插进 DOM 的 `<img>`。
+
+    症状极具误导性：`img.naturalWidth` 恒为 0，看起来像"图路径是坏的 / 图是裂的"，
+    而同一个 URL 用 urllib 直接取是 **200 + 正确字节数**。
+    也就是说，**这个工具会告诉你"功能坏了"，而坏的是工具自己**。
+
+    ⇒ 换 `ThreadingTCPServer`：`/__hold` 只睡它自己那个线程，
+      其余请求照常并发服务，与真实浏览器里的行为一致。
+      `daemon_threads = True` 让进程退出时不被残留线程拖住。
+    """
     socketserver.TCPServer.allow_reuse_address = True
-    httpd = socketserver.TCPServer(("127.0.0.1", port), Handler)
+    httpd = socketserver.ThreadingTCPServer(("127.0.0.1", port), Handler)
+    httpd.daemon_threads = True
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
     return httpd
 

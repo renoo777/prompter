@@ -79,6 +79,17 @@ export const api = {
   modelsDir: () => invoke<string>("models_dir"),
   openPath: (path: string) => invoke<void>("open_path", { path }),
 
+  /**
+   * 用系统默认浏览器打开一个 http/https 链接。
+   *
+   * ★ 为什么不在这里退回 `window.open` / `<a target="_blank">`：这个窗口是
+   *   Tauri 的 webview，**没有**注册新窗口的处理器（`withGlobalTauri: false`，
+   *   也没装 opener/shell 插件），新标签会被静默拦下 —— 点了没反应，
+   *   是本项目最忌讳的那种失败。打开链接必须走后端。
+   * ★ 后端只放行 http/https，别的协议会**报错**（见 commands::open_url）。
+   */
+  openUrl: (url: string) => invoke<void>("open_url", { url }),
+
   /** 自检清单：平台 / 句柄 / 模型 / 识别能力。 */
   diagnostics: () => invoke<[string, string][]>("diagnostics"),
 

@@ -176,6 +176,7 @@ pub fn run() {
             commands::rescan_models,
             commands::models_dir,
             commands::open_path,
+            commands::open_url,
             commands::diagnostics,
             // 稿件库
             commands::list_scripts,

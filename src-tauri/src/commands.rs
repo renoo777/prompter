@@ -1355,6 +1355,57 @@ pub fn open_path(path: String) -> Result<(), String> {
     result.map(|_| ()).map_err(|e| format!("无法打开：{e}"))
 }
 
+/// 用系统默认浏览器打开一个 http/https 链接。
+///
+/// # 为什么不复用 `open_path`
+///
+/// 两条理由，任一条都足以另开一个命令：
+///   1. 那条路第一件事就是 `Path::exists()` —— 一个网址**永远**过不了这一关，
+///      于是"打开链接"会稳定地报「路径不存在」。错误信息比没有更坏。
+///   2. 它的语义是"用默认程序打开磁盘上的某个东西"。把网址塞进去之后，
+///      那个函数的 doc 注释和它的错误文案就都开始说假话了。
+///
+/// # `★ 只放行 http/https` 是安全边界，不是格式校验
+///
+/// 入参最终会交给系统的协议处理器。不做白名单的话，前端一旦被注入
+/// （稿件正文、粘贴的内容都是外部输入），就能借这个命令拉起任意一个
+/// 已注册协议的本地程序 —— `file:`、`ms-settings:`、以及一堆第三方装上的
+/// 自定义协议。判据是本项目的「显式失败不静默失败」：
+/// 不认识的协议**报错**，不是悄悄什么都不做。
+///
+/// # 平台分支
+///
+/// Windows 用 `cmd /C start` 而不是 `explorer`：后者的主职是打开文件管理器，
+/// 对 URL 的处理没有文档保证；而 `start` 就是系统给"按默认处理器打开"的入口。
+/// `CREATE_NO_WINDOW` 必须带上 —— 否则每点一次链接都会闪一下黑框。
+/// （这里走 std 的 `CommandExt`，不引入 windows crate —— 见 Cargo.toml 里
+/// 「Windows 侧零额外依赖」那条决定。）
+#[tauri::command]
+pub fn open_url(url: String) -> Result<(), String> {
+    if !(url.starts_with("https://") || url.starts_with("http://")) {
+        return Err(format!("只支持 http/https 链接：{url}"));
+    }
+
+    #[cfg(target_os = "windows")]
+    let result = {
+        use std::os::windows::process::CommandExt;
+        // CREATE_NO_WINDOW —— 不给子进程开控制台窗口。
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        std::process::Command::new("cmd")
+            .args(["/C", "start", "", &url])
+            .creation_flags(CREATE_NO_WINDOW)
+            .spawn()
+    };
+
+    #[cfg(target_os = "macos")]
+    let result = std::process::Command::new("open").arg(&url).spawn();
+
+    #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
+    let result = std::process::Command::new("xdg-open").arg(&url).spawn();
+
+    result.map(|_| ()).map_err(|e| format!("无法打开链接：{e}"))
+}
+
 // ---------------------------------------------------------------------------
 // 窗口层：穿透 / 收起 / 位置锁定
 // ---------------------------------------------------------------------------

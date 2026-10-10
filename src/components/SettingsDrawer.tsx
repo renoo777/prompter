@@ -401,6 +401,46 @@ const THEMES: [UiTheme, string][] = [
   ["system", "系统"],
 ];
 
+/**
+ * 「支持作者」的收款信息 —— **唯一出处**（改码、改备注只动这里）。
+ *
+ * # 收款人备注为什么是**常驻文字**，不是悬停提示
+ *
+ * 本项目的硬规则是**界面零悬停提示**（守它的门槛见 `scripts/check-tooltips.py`
+ * 与 `check-hover-silent.py`）。而"付款前核对收款人"本身是**防错付**的运行时
+ * 信息 —— 按「信号只换位置、不消失」的判据，它只能改成看得见的文字。
+ *
+ * # 为什么**没有**「保存原图」按钮（参考实现 Flow Navigator 那边有一个）
+ *
+ * Tauri 的 webview 没有接下载处理器，`<a download>` 会**静默什么都不做** ——
+ * 用户按了没反应，比根本没有这个按钮更坏。而"手机对着屏幕扫"本来就不需要它；
+ * 真正需要交代的是**反过来的那一句**（截图后再扫可能识别不了），
+ * 所以它写进了下面展开区的正文里。
+ *
+ * # 为什么整块默认收起
+ *
+ * 二维码从不首屏平铺，这是主流软件的惯例（IINA / Motrix / Obsidian 都把
+ * 打赏收在关于页）；更要紧的是本项目那条判据：**设置面板每一行的垂直空间
+ * 都很贵** —— 一个多数人不会点开的东西，不配占首屏。
+ */
+const DONATE = {
+  /** 微信赞赏码的收款人。付款时核对，对不上就别付。 */
+  weixinNickname: "renoo",
+  /** 支付宝收款码的收款人。 */
+  alipayNickname: "周先生的小铺(*明)",
+  /** 海外打赏通道（需要 Visa/MasterCard）。 */
+  sponsorUrl: "https://github.com/sponsors/renoo777",
+  /**
+   * 码图放 `public/donate/`，vite 原样拷进 `dist/donate/`。
+   * ★ 路径必须写**相对**的 `./donate/...`：Tauri 把 `dist/` 挂在自定义协议
+   *   的根上（`frontendDist: "../dist"`），相对路径在开发服务器上同样成立。
+   * ★ 这两张图**自带白底与静区**，所以直接渲染即可 —— 不要给它套深色底，
+   *   窗口外壳是半透明的（`--win-alpha`），底色一透过来就扫不出来了。
+   */
+  weixinQr: "./donate/weixin.jpg",
+  alipayQr: "./donate/alipay.jpg",
+} as const;
+
 export function SettingsDrawer() {
   const { state, dispatch } = useApp();
   const {
@@ -1837,6 +1877,65 @@ export function SettingsDrawer() {
               </span>
             }
           />
+        </Group>
+
+        {/* ======================================================== 支持作者
+         *
+         * ★ 它是**独立的一组**，没有塞进上面的「更多」里 —— 两者装的东西
+         *   性质不同：「更多」装的是**这台机器的设置项**（引擎、迁移、诊断），
+         *   而"要不要请作者喝杯茶"跟配置无关。塞进去就等于把这个入口埋到
+         *   三层以下（更多 → 支持作者 → 展开双码），而一个三层深的入口
+         *   等于没有入口 —— 用户找不到的入口和不存在的入口是一回事。
+         *
+         * ★ 整组默认收起（`collapsible`）：二维码从不首屏平铺。
+         *   顺带一个好处：`Group` 收起时不渲染 children，所以两张码图
+         *   在用户点开之前**根本不会被请求**。
+         *
+         * ★ 组里没有任何行内小字（`.grp-l .grp-s`）—— 那是设置行才有的东西，
+         *   而这里是一块**被用户主动展开的内容**，正文与说明本来就该在。
+         */}
+        <Group title="支持作者" collapsible>
+          <div className="donate">
+            <p className="donate-pitch">
+              这个工具我一个人在做，免费、也没有付费才能解锁的功能。
+              如果它帮你省下过几场直播的力气，欢迎请我喝杯茶。
+            </p>
+            <div className="donate-grid">
+              <div className="donate-card">
+                <div className="donate-name">微信赞赏</div>
+                <img
+                  className="donate-qr"
+                  src={DONATE.weixinQr}
+                  alt={`微信赞赏码（收款人 ${DONATE.weixinNickname}）`}
+                  draggable={false}
+                />
+                <div className="donate-nick">收款人 {DONATE.weixinNickname}</div>
+              </div>
+              <div className="donate-card">
+                <div className="donate-name">支付宝</div>
+                <img
+                  className="donate-qr"
+                  src={DONATE.alipayQr}
+                  alt={`支付宝收款码（收款人 ${DONATE.alipayNickname}）`}
+                  draggable={false}
+                />
+                <div className="donate-nick">收款人 {DONATE.alipayNickname}</div>
+              </div>
+            </div>
+            <div className="donate-note">
+              对着这个屏幕扫最稳；截图之后再扫，微信和支付宝多半会认不出来。
+            </div>
+            <div className="donate-foot">
+              <button
+                className="btn"
+                onClick={() => {
+                  void api.openUrl(DONATE.sponsorUrl).catch(fail);
+                }}
+              >
+                海外用户：GitHub 赞助
+              </button>
+            </div>
+          </div>
         </Group>
       </div>
     </aside>

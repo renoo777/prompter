@@ -20,6 +20,9 @@
  *   &glassclick=off|css|system  点「背景磨砂」行的某一档（走真落盘路径，量四联测）
  *   &moreclick=1          展开「更多」那一组（它默认收起）
  *   &guideclick=1         展开「更多」里的「功能介绍」长文（默认也收起）
+ *   &donateclick=1        展开「支持作者」并按下赞助按钮（组默认收起；
+ *                         报 donateQr/donateQrW/openedUrl，图有没有
+ *                         解码出来看收尾的 donateImgOkLate）
  *   &guidescroll=<px>     把抽屉正文滚到指定位置（长文要往下翻才看得到下面几组）
  *
  * ★ 第十一轮起**不再有 `hover=`**：提示整个删了，没有"悬停才出现"的东西
@@ -522,6 +525,19 @@ const COMMANDS = {
   is_collapsed: () => params.get("collapsed") === "1",
   models_dir: () => bootstrap.models_dir,
   rescan_models: () => bootstrap.found_models,
+  /*
+   * 打开外部链接（设置里的「支持作者 › 海外用户：GitHub 赞助」）。
+   *
+   * ★ 桩必须**记下来**，不能像没接的命令那样回个 `undefined` 了事：
+   *   前端那条路唯一可见的证据就是"后端被调到了"。桩要是静默吞掉，
+   *   "点了没反应"与"点了但压根没接后端"在离线预览里长得**一模一样**
+   *   —— 而前者正是本项目最忌讳的失败模式。
+   *   记到 `window.__openedUrls`，由 `donateclick` 那一步读出来报进 diag。
+   */
+  open_url: (a) => {
+    (window.__openedUrls = window.__openedUrls || []).push(a && a.url);
+    return undefined;
+  },
   diagnostics: () => [
     ["版本", "0.1.0（离线预览）"],
     ["平台", "windows x86_64"],
@@ -1578,6 +1594,67 @@ waitFor(".topbar .icon-btn", () => {
   }
 
   /*
+   * 展开「支持作者」并按下赞助按钮 —— `donateclick=1`
+   *
+   * ★ 为什么需要这个参数：「支持作者」整组默认收起（`Group` 的 `collapsible`），
+   *   默认截图里它只是一行标题 —— 收款码在不在、图路径对不对、赞助按钮接没接
+   *   后端，全都**没被覆盖**。
+   *
+   * ★ 锚点用组标题文字 + `includes`：可折叠的标题前面会先渲染一枚 `›`，
+   *   `textContent` 实际是「›支持作者」；写成全等会得到 `donateHead=none`，
+   *   而且**它不报错** —— 只是 quietly 什么都没点。
+   *
+   * ★★「图到底加载出来没有」这一项**不在这里量，在收尾那一刻量**
+   *   （收尾块里的 `donateImgOkLate` / `donateImgNatural`）。
+   *   最初写成在这里量，得到 `donateImgOk=0` —— 看着像"图是裂的"，
+   *   其实只是**没等它**：图片的解码是异步的，而这一步距展开只有 600ms。
+   *   收尾那一刻已经过去好几秒，它要么已经好了，要么就真的是坏路径
+   *   （服务器 200 而 DOM 里 `naturalWidth` 还是 0）。
+   *   这正是本项目那类"量早了 = 看着像功能没做"的坑（见 guideclick 注释）。
+   *   这里只报**展开的实况**：`donateQr` 有几张、`donateQrW` 有多大
+   *   （码太小同样扫不出来，而那是这一步唯一的目的）、收款人是谁。
+   *
+   * ★ `openedUrl` 验的是赞助按钮**确实走到了后端**（见 COMMANDS 里的
+   *   `open_url`）：在桩里"点了没反应"与"根本没接后端"长得一样，必须留证据。
+   */
+  if (params.get("donateclick")) {
+    steps.push(() => {
+      const head = Array.from(document.querySelectorAll(".drawer .grp-h")).find((e) =>
+        (e.textContent || "").includes("支持作者"),
+      );
+      if (!head) {
+        diag.push("donateHead=none");
+        return;
+      }
+      realTap(head);
+      diag.push("donateOpen=1");
+      // `realTap` 的 click 是**延后**发的 —— 紧跟着量必然量到 0，
+      // 那是"还没重渲染"，不是"点了没反应"（同一个坑见上面 guideclick）。
+      setTimeout(() => {
+        const qrs = Array.from(document.querySelectorAll(".drawer .donate-qr"));
+        diag.push(`donateQr=${qrs.length}`);
+        if (qrs.length) {
+          diag.push(`donateQrW=${Math.round(qrs[0].getBoundingClientRect().width)}`);
+        }
+        const nick = document.querySelector(".drawer .donate-nick");
+        diag.push(`donateNick=${nowrap((nick?.textContent || "none").trim())}`);
+
+        const btn = document.querySelector(".drawer .donate-foot .btn");
+        if (!btn) {
+          diag.push("donateBtn=none");
+          return;
+        }
+        realTap(btn);
+        setTimeout(() => {
+          const opened = window.__openedUrls || [];
+          diag.push(`openedN=${opened.length}`);
+          if (opened.length) diag.push(`openedUrl=${nowrap(String(opened[0]))}`);
+        }, 400);
+      }, 600);
+    });
+  }
+
+  /*
    * 把抽屉正文滚到指定像素 —— `guidescroll=<px>`
    *
    * ★ 存在的理由：功能介绍有二十多条，一次截不完；而
@@ -2370,6 +2447,30 @@ waitFor(".topbar .icon-btn", () => {
      *   下一个人看到 `tip=none` 会去查气泡为什么没出来。
      *   ⇒ 整块删掉。要守"提示不许复活"有 `check-tooltips.py`，不靠这里。
      */
+    /*
+     * 「支持作者」的码图**到底加载出来没有** —— 在收尾这一刻量。
+     *
+     * ★ 为什么不放在 `donateclick` 那一步里量：那一步距展开只有 600ms，
+     *   而图片解码是异步的，量到的是"还没好"而不是"坏了"（实测
+     *   `donateImgOk=0`，而同一个路径用 urllib 取是 200 + 59412 字节）。
+     *   收尾这一刻已经过去好几秒，答案才有意义。
+     *
+     * ★ 这条检查守的是一个**没有任何门槛能发现**的失效：码图走的是
+     *   `public/donate/*.jpg` → `dist/donate/*.jpg` 这条链。谁把 public
+     *   目录挪走、或改了 `DONATE.weixinQr` 的相对路径，图就是裂的 ——
+     *   而**裂图不会让构建失败、不会让 tsc 报错、截图上也只是一块空白**，
+     *   它只是让"打赏"这件事悄悄失效。`naturalWidth` 是唯一的直接证据。
+     *   `donateImgSrc` 顺手把**解析后的 src** 报出来，路径错了能一眼看出是哪一段。
+     */
+    const donorQrs = Array.from(document.querySelectorAll(".drawer .donate-qr"));
+    if (donorQrs.length) {
+      parts.push(
+        `donateImgOkLate=${donorQrs.filter((i) => i.naturalWidth > 0).length}/${donorQrs.length}`,
+        `donateImgNatural=${donorQrs.map((i) => i.naturalWidth).join(",")}`,
+        `donateImgSrc=${nowrap(donorQrs[0].getAttribute("src") || "none")}`,
+      );
+    }
+
     parts.push(`vw=${innerWidth}`, `vh=${innerHeight}`);
     } catch (e) {
       document.title =
