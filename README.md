@@ -155,27 +155,12 @@ open src-tauri/target/release/bundle/macos/Prompter.app
 
 > **macOS 那一列刻意不写「同左」** —— 那是负债。这台机器是 Windows，Mac 上的东西**一次都没跑过**，
 > 所以列里的「✅」只有两种含义：界面类的靠**离线渲染 + 量化测量**核对，纯逻辑靠**跨平台单元测试**。
-> **隐身、穿透、托盘这三项必须上真机，而它们都还没跑过。** 上机步骤见
-> [`docs/macOS上机测试清单.md`](docs/macOS上机测试清单.md) —— 测之前先读那份。
+> **隐身、穿透、托盘这三项必须上真机，而它们都还没跑过** —— macOS 现在只是「代码已就位」。
 
 > ⚠️ **关于 macOS 隐身，有一条必须先知道**：macOS 15（Sequoia）起 Apple 改了 WindowServer 架构，
 > ScreenCaptureKit 直接读取合成后的最终画面，**公开 API 已无法阻止屏幕捕获**。代码里预留了私有 API 路径，
 > 但它未经 Apple 认可，**且不同会议软件结论可能相反**（走 ScreenCaptureKit 的可能看得见、走 CoreGraphics 的可能看不见）
 > —— 必须上真机逐软件实测才能下结论。
-
----
-
-## 给另一台电脑用
-
-| 场景 | 做法 | 结果 |
-|---|---|---|
-| **Windows → Windows** | 在源码目录跑 `npx tauri build --bundles nsis` | 一个 **6.1 MB** 安装包，双击即装 |
-| **Windows → macOS** | `.exe` 完全用不了；要在 **Mac 上**用源码构建出 `.app` | 见上面 macOS 一节（且隐身未验） |
-
-* **别直接拷那个 `prompter.exe`** —— 它依赖系统的 WebView2 运行时，对方没装就是「双击没反应、且没有任何提示」。
-* ★ **出包不要写 `npm run tauri:build -- --bundles nsis`**：那条脚本里的 `--no-bundle` 会把它**静默压掉**（命令成功、只出裸 exe）。直接调 CLI。
-
-完整步骤（含传输方式、Mac 上的前置条件）见 [`docs/分发到另一台电脑.md`](docs/分发到另一台电脑.md)。
 
 ---
 
@@ -189,7 +174,7 @@ open src-tauri/target/release/bundle/macos/Prompter.app
 | [能力清单与验证状态](docs/能力与验证状态.md) | 「你说的我信吗？」—— 逐条能力的**证据与数字**，包括没做成的那些 |
 | [隐身验证与排查](docs/隐身验证与排查.md) | 「我自己验一遍」—— 「隐身到底生效没有」的自动化验证方法 |
 
-剩余文档是**我们自己干活用的**，跟"用这个产品"无关，因此不在这里列 —— 索引在 [`docs/README.md`](docs/README.md)。
+其余文档是**我们自己干活用的**，跟「用这个产品」无关，所以不在这里列。
 
 ---
 
@@ -206,6 +191,19 @@ build.bat              :: 出 release 产物 → src-tauri\target\release\prompt
 >
 > ★ **别拿 `target\debug\prompter.exe` 当交付物** —— 那是 `tauri dev` 的产物，它要连本地 vite，
 > 双击只会看到「无法访问此页面」。**能独立运行的只有 release 产物。**
+
+### 出包 / 给别人用
+
+★ **仓库里没有任何现成安装包可下载** —— 要给别人用得自己出包：
+
+| 场景 | 做法 | 结果 |
+|---|---|---|
+| **Windows → Windows** | `npx tauri build --bundles nsis` | 一个 **6.1 MB** 安装包，双击即装 |
+| **Windows → macOS** | `.exe` 完全用不了；要在 **Mac 上**用源码构建出 `.app` | 见上面 macOS 一节（且隐身未验） |
+
+* **别直接拷 `prompter.exe`** —— 它依赖系统的 WebView2 运行时，对方没装就是「双击没反应、且没有任何提示」。
+* ★ **出包不要写 `npm run tauri:build -- --bundles nsis`**：脚本里的 `--no-bundle` 会把它**静默压掉**（命令成功、只出裸 exe）。直接调 CLI。
+* 完整步骤（含传输方式、Mac 前置条件）在 `docs/分发到另一台电脑.md`；索引见下方。
 
 改代码前的硬约束（哪些设计不能再动、门槛怎么跑）在 [`docs/判断基线.md`](docs/判断基线.md)。
 **其余维护者向文档**（判据、需求拆解、竞品调研、分发、上机测试、仓库操作…）的索引见
