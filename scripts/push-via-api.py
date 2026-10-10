@@ -340,7 +340,13 @@ def main():
             payload_tree = []
             for status, path, new_mode, new_sha in changes:
                 if status.startswith("D"):
-                    payload_tree.append({"path": path, "mode": new_mode,
+                    # ★ 删除条目：以 sha=null 表示"移除该路径"。
+                    #   但 GitHub 仍会校验 mode，而 git 对删除给出的 new_mode 是
+                    #   "000000"（全零）⇒ 原样传会被 422
+                    #   `Must supply a valid tree.mode` 拒掉（2026-10-10 真踩：
+                    #   重放到「删掉 check-doc-images.py」那一条时整个推送中止）。
+                    #   sha=null 时 mode 语义上无意义，给个合法值即可。
+                    payload_tree.append({"path": path, "mode": "100644",
                                          "type": "blob", "sha": None})
                 else:
                     payload_tree.append({
