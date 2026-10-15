@@ -10,7 +10,7 @@
   3. 上面两次构建零警告
   4. tsc --noEmit 零错 + vite build 通过 + 静态前端检查（STATIC_CHECKS，
      目前是 check-tooltips.py / check-hook-order.py / check-hover-silent.py /
-     check-glass-mode.py / check-doc-refs.py）
+     check-glass-mode.py / check-doc-refs.py / check-feedback-link.py）
 
 ★ 期望值只认下面那个 `EXPECT` 字典 —— 这份文件头只是说明，数字以 `EXPECT` 为准。
   ★ 2026-10-09 真踩：这两行一直停在 107 / 91，而 `EXPECT` 早已是 112 / 96
@@ -77,6 +77,7 @@ STATIC_CHECKS = [
     "check-hover-silent.py",
     "check-glass-mode.py",
     "check-doc-refs.py",
+    "check-feedback-link.py",
 ]
 
 # ★ 2026-10-09（第十四轮·README 收成产品页）加了第四道 `check-doc-refs.py`。
@@ -99,6 +100,18 @@ STATIC_CHECKS = [
 #     ★ 行内代码那一条是它上线后第一次真跑暴露的：只剥围栏块时，
 #       `判断基线.md` 里用单反引号举的"这些语法长什么样"的例子被当真引用，
 #       门槛报了一条假断链。**假阳性比没有门槛更坏。**
+
+# ★ 2026-10-15 加了第六道 `check-feedback-link.py`（设置 →「关于 › 意见反馈」）。
+#   它守的三件事**截图与编译都发现不了**：地址在 src/ 下只剩一份（唯一出处）、
+#   那一份在 `FEEDBACK` 常量里、那一行与后端接线都还在。
+#   ⇒ 少了它，删掉入口 / 改断 onClick / 就地抄一份地址，**没有任何东西会响**：
+#     tsc 不报（少一行 row 是合法的）、截图里"少了一行"和"设计如此"长得一样。
+#   ★ 它**不判断"地址对不对"**：那是飞书的分享直链，换表单就会变，
+#     把分享 id 抄进来当断言会让换一次表单要改两个文件 —— 而"改了两处
+#     就会有第三处忘了改"，正是它要防的事。地址对不对只能靠人点一次。
+#   ★ 纯读源码、几毫秒 ⇒ 按"每次必跑"挂这里（不像 check-update-bar.py：
+#     那个要驱动一次 headless Edge、还要等前端 3 秒的启动检查，一轮 40 秒以上，
+#     所以它**不进** STATIC_CHECKS，只在动更新那块时手工跑）。
 
 # ★ Windows 上必须写全名：subprocess 走 CreateProcess，会自动补 `.exe`，
 #   但**不会**补 `.cmd` ⇒ 写裸 `npm` 会 FileNotFoundError。

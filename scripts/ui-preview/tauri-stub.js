@@ -23,6 +23,9 @@
  *   &donateclick=1        展开「支持作者」并按下赞助按钮（组默认收起；
  *                         报 donateQr/donateQrW/openedUrl，图有没有
  *                         解码出来看收尾的 donateImgOkLate）
+ *   &feedbackclick=1      按「关于 › 意见反馈」那颗按钮（配 &open=settings 用）。
+ *                         报 feedbackBtnLabel / feedbackOpenedN / feedbackUrl ——
+ *                         这颗按钮唯一的证据就是"后端真被调到了"。
  *   &guidescroll=<px>     把抽屉正文滚到指定位置（长文要往下翻才看得到下面几组）
  *   &update=<版本号>      让桩假装查到一个新版本（默认报"没有更新"，那才是常态）。
  *                         ★ 必须再配 `&settle=3200` —— 前端启动后要等 3 秒才查，
@@ -1683,6 +1686,51 @@ waitFor(".topbar .icon-btn", () => {
           if (opened.length) diag.push(`openedUrl=${nowrap(String(opened[0]))}`);
         }, 400);
       }, 600);
+    });
+  }
+
+  /*
+   * 按下「关于 › 意见反馈」那颗按钮 —— `feedbackclick=1`
+   * （配 `open=settings` 用：先开抽屉，再按）
+   *
+   * ★ 为什么必须有这个参数：这颗按钮**唯一可见的证据就是"后端被调到了"**
+   *   （`api.openUrl` → `open_url`）。桩里"点了没反应"与"压根没接后端"
+   *   长得**一模一样** —— 而那正是本项目最忌讳的失败模式（同上面 donateclick
+   *   那段，`open_url` 也为此把地址记进 `window.__openedUrls`）。
+   *
+   * ★ 锚点按**结构**找，不按产品文案：
+   *   `.drawer .grp-row` 里 `.grp-l .grp-t` 文字是「意见反馈」的那一行，
+   *   取它右侧 `.grp-r` 里的 `.btn`。按钮上的文案（"填写反馈"）是会改的，
+   *   而"这一行的右按钮"不会 —— 按文案找的断言会在改文案那天静默变成 none。
+   *
+   * ★ 抽屉此刻可能滚不到这一屏：`realTap` 是把事件**直接派发到元素**上的
+   *   （见它自己的实现），所以屏外也能点到；这里不需要先滚动。
+   */
+  if (params.get("feedbackclick")) {
+    steps.push(() => {
+      const row = Array.from(document.querySelectorAll(".drawer .grp-row")).find((r) =>
+        (r.querySelector(".grp-l .grp-t")?.textContent || "").includes("意见反馈"),
+      );
+      if (!row) {
+        diag.push("feedbackRow=none");
+        return;
+      }
+      const btn = row.querySelector(".grp-r .btn");
+      if (!btn) {
+        diag.push("feedbackBtn=none");
+        return;
+      }
+      diag.push(`feedbackBtnLabel=${nowrap((btn.textContent || "").trim())}`);
+      realTap(btn);
+      // 同 donateclick：`realTap` 的 click 是**延后**发的，紧跟就量会量到 0 ——
+      // 那是"还没跑完"，不是"点了没反应"。
+      setTimeout(() => {
+        const opened = window.__openedUrls || [];
+        diag.push(`feedbackOpenedN=${opened.length}`);
+        if (opened.length) {
+          diag.push(`feedbackUrl=${nowrap(String(opened[opened.length - 1]))}`);
+        }
+      }, 400);
     });
   }
 
