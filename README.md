@@ -62,9 +62,10 @@
 
 ### Windows
 
-**[下载 Prompter_0.1.0_x64-setup.exe](https://github.com/renoo777/prompter/releases/latest/download/Prompter_0.1.0_x64-setup.exe)**（6.25 MB）→ 双击 → 下一步。装完开始菜单里就有「Prompter」。
+**[下载 Prompter_0.1.1_x64-setup.exe](https://github.com/renoo777/prompter/releases/latest/download/Prompter_0.1.1_x64-setup.exe)**（6.91 MB）→ 双击 → 下一步。装完开始菜单里就有「Prompter」。
 
 * 装在**当前用户目录**下，不弹管理员授权。
+* 装这一次之后就不用再手动下了：下次有新版本，软件会在启动时自己提示，点一下就地更新。
 * Windows 10 / 11 自带 WebView2，一般不用再装别的；万一没有，安装包会联网补一份。
 * 只想要一个免安装的裸 exe、或者想自己出包 —— 见下面的「[出包 / 给别人用](#出包--给别人用)」。
 
@@ -187,16 +188,17 @@ build.bat              :: 出 release 产物 → src-tauri\target\release\prompt
 
 ### 出包 / 给别人用
 
-**Windows 的现成安装包在 [Releases](https://github.com/renoo777/prompter/releases) 里**（`Prompter_0.1.0_x64-setup.exe`，6.25 MB）。
+**Windows 的现成安装包在 [Releases](https://github.com/renoo777/prompter/releases) 里**（`Prompter_0.1.1_x64-setup.exe`，6.91 MB）。
 要自己出一个、或者给别的平台出，按下面走：
 
 | 场景 | 做法 | 结果 |
 |---|---|---|
-| **Windows → Windows** | `npx tauri build --bundles nsis` | 一个 **6.25 MB** 安装包，双击即装 |
+| **Windows → Windows** | `npx tauri build --bundles nsis` | 一个 **6.9 MB** 安装包，双击即装 |
 | **Windows → macOS** | `.exe` 完全用不了；要在 **Mac 上**用源码构建出 `.app` | 见上面 macOS 一节。★ 未签名、未公证 —— **对方首次打开必须自己过一遍 Gatekeeper** |
 
 * **别直接拷 `prompter.exe`** —— 它依赖系统的 WebView2 运行时，对方没装就是「双击没反应、且没有任何提示」。
 * ★ **出包不要写 `npm run tauri:build -- --bundles nsis`**：脚本里的 `--no-bundle` 会把它**静默压掉**（命令成功、只出裸 exe）。直接调 CLI。
+* ★ **要发能「应用内更新」的包，`npx` 那条命令前面必须带 `TAURI_SIGNING_PRIVATE_KEY`**，否则安装包会照常编出来、**却不产 `.sig`** —— 看起来成功，装上去永远更不了新。判据是 `bundle/nsis/` 里有没有同名的 `.exe.sig`。桌面版是同一个 `-setup.exe` 当更新包（**没有** `.nsis.zip`，那是 Tauri v1 的形状）。
 * 完整步骤（含传输方式、Mac 前置条件）在 `docs/分发到另一台电脑.md`；索引见下方。
 
 改代码前的硬约束（哪些设计不能再动、门槛怎么跑）在 [`docs/判断基线.md`](docs/判断基线.md)。

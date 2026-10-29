@@ -103,6 +103,7 @@ import datetime
 import importlib.util
 import json
 import os
+import re
 import sys
 import time
 import urllib.error
@@ -321,6 +322,34 @@ def main():
         print("· 更新包：%s（%.2f MB）→ %s，版本 %s"
               % (updater["zip_name"], os.path.getsize(zip_path) / 1024 / 1024,
                  updater["target"], version))
+
+    # ---- 0b) README 里 `releases/latest/download/<文件名>` 自检 ----
+    #
+    # ★ 为什么放在「动远端之前」：`latest/download/` 是**跟着最新 Release 走**的
+    #   目录。一发新版，README 首页那条写着旧版本文件名的链接**立刻 404** ——
+    #   而 GitHub 不会报错，只是点进来的人看到一个 404 页。这是"产品页第一屏
+    #   失效"，比代码 bug 还伤（见记忆里"文档里的数字要跟着改动一起复测"）。
+    #
+    #   这件事只在"发新版"这一刻发生，所以守在这里最省事：本地已有文件名清单，
+    #   与 README 里引用的逐条比对，不认识的就是旧版残留。
+    #
+    #   只查 README（产品页），doc/*.md 里的历史记录允许提到旧文件名。
+    readme_path = os.path.join(ROOT, "README.md")
+    if os.path.isfile(readme_path):
+        known = {os.path.basename(p) for p in assets}
+        if updater:
+            known.update({updater["zip_name"], updater["sig_name"]})
+        with open(readme_path, "r", encoding="utf-8") as f:
+            readme_text = f.read()
+        stale = sorted({m for m in re.findall(
+            r"releases/latest/download/([^)\s\"'>]+)", readme_text) if m not in known})
+        if stale:
+            print("✗ README 的下载直链指向本次没上传的文件：")
+            for fn in stale:
+                print("    %s" % fn)
+            print("  `releases/latest/download/` 跟着最新 Release 走，旧文件名会直接 404。")
+            print("  把 README 里的文件名（和体积）改成这次的资产再发。")
+            return 2
 
     # ---- 1) 认证 ----
     token = login = None
