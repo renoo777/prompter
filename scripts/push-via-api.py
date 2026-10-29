@@ -269,6 +269,11 @@ def main():
     ap.add_argument("--repo", default="prompter")
     ap.add_argument("--branch", default="master")
     ap.add_argument("--dry-run", action="store_true")
+    # 只重放远端还没有的提交（按 tree 认共同点）。远端已是最新时直接返回 0。
+    # ★ 默认关闭：全量重放是"一定正确、只是慢"的那条路，改默认值要单独论证。
+    ap.add_argument("--incremental", action="store_true",
+                    help="远端已有内容时只重放增量提交（按 tree 与远端 HEAD 对齐；"
+                         "找不到共同点会退回全量）")
     args = ap.parse_args()
 
     print("=" * 64)
@@ -330,10 +335,63 @@ def main():
         bootstrap_branch = dflt
 
     commits = list_commits()
-    print("· 本地提交 %d 个，逐提交重放" % len(commits))
+
+    # ★ `--incremental`：远端已经有内容时，只重放"远端还没有的"那些提交。
+    #
+    # 判据是 **tree**，不是 commit SHA —— GitHub 会裁掉消息末尾换行，同一条
+    # 提交在两边 SHA 必然不同（见文件头 ②），而 tree 相同 == 文件内容与
+    # 权限位逐字节一致。
+    #
+    # 做法：取远端分支 HEAD 的 tree，在本地历史里从**最新**往回找第一条 tree
+    # 相同的提交，它之后才是增量。那一条的本地父提交（`m["parents"][0]`）
+    # 内容正好等于远端 HEAD ⇒ 第一条增量的 `diff_raw(parent, c)` 可以直接
+    # 落在 `base_tree = 远端 tree` 上，不需要额外对齐。
+    #
+    # ★ 为什么值得（2026-10-29 加）：全量重放要把根提交的 ~170 个 blob 全传
+    #   一遍（约 200 个请求、好几分钟），而且会把远端**所有** SHA 换掉 ——
+    #   已经发出去的 `v0.1.0` tag 就变成"不属于任何分支"的游离提交。
+    #   增量只有几十个请求，历史也保住了。
+    #   找不到共同点 / 分支还不存在时**自动退回全量**，不会卡住。
+    remote_tree = None
+    remote_commit = None
+    replay = commits
+
+    if args.incremental:
+        st, ref0 = api(token, "/repos/%s/%s/git/ref/heads/%s"
+                       % (login, args.repo, args.branch))
+        if st == 200 and isinstance(ref0, dict):
+            head_sha = ref0["object"]["sha"]
+            st, head_com = api(token, "/repos/%s/%s/git/commits/%s"
+                               % (login, args.repo, head_sha))
+            head_tree = (head_com.get("tree") or {}).get("sha") if st == 200 else None
+            if not head_tree:
+                print("· --incremental：取不到远端 HEAD 的 tree ⇒ 退回全量重放")
+            else:
+                hit = None
+                for i, c in enumerate(commits):
+                    if commit_meta(c)["tree"] == head_tree:
+                        hit = i
+                if hit is None:
+                    print("· --incremental：远端 HEAD 的 tree 在本地历史里找不到"
+                          " ⇒ 退回全量重放")
+                elif hit == len(commits) - 1:
+                    print("✓ 远端已是最新（远端 HEAD tree == 本地 HEAD tree），无需重放")
+                    return 0
+                else:
+                    replay = commits[hit + 1:]
+                    remote_tree = head_tree
+                    remote_commit = head_sha
+                    print("· --incremental：远端 HEAD 对应本地 %s" % commits[hit][:12])
+                    print("  ⇒ 只重放其后的 %d 个提交" % len(replay))
+        else:
+            print("· --incremental：分支 %s 还不存在 ⇒ 全量重放" % args.branch)
+
+    print("· 待重放 %d 个提交（本地共 %d）" % (len(replay), len(commits)))
 
     if args.dry_run:
-        for c in commits:
+        if remote_commit:
+            print("  起点：远端 HEAD %s（它的 tree 就是 base_tree）" % remote_commit[:12])
+        for c in replay:
             m = commit_meta(c)
             print("  %s  %s  tree=%s" % (c[:12], m["message"].splitlines()[0][:44], m["tree"][:12]))
         print("\n(--dry-run，未写远端)")
@@ -341,9 +399,7 @@ def main():
 
     # 3) 逐提交重放
     blob_cache = {}
-    remote_tree = None
-    remote_commit = None
-    for idx, c in enumerate(commits, 1):
+    for idx, c in enumerate(replay, 1):
         m = commit_meta(c)
         if remote_tree is None:
             # 根提交：整棵树全量
@@ -398,7 +454,7 @@ def main():
         #   而 tree SHA 相同 == 该提交的文件内容与权限位逐字节一致。
         tree_ok = (remote_tree == m["tree"])
         print("  [%d/%d] %s  %s  tree %s" % (
-            idx, len(commits), c[:12], m["message"].splitlines()[0][:32],
+            idx, len(replay), c[:12], m["message"].splitlines()[0][:32],
             "✓ 一致" if tree_ok else "✗ 不一致！本地 %s" % m["tree"][:12]))
         if not tree_ok:
             print("✗ tree 不一致 ⇒ 内容迁移有误，中止（远端已被写脏，需重建）")
