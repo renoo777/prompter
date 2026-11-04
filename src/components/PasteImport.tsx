@@ -7,13 +7,25 @@ import type { ScriptPayload } from "../types";
 /**
  * 把稿件还原成可编辑的纯文本。
  *
- * 段与段之间**空一行** —— `build_script` 正是按空行分段的。
- * 不用空行的话，"打开编辑 → 直接保存"会把所有段落粘成一段，
- * 于是排版全变、段落导航（上一段/下一段）也失效。
+ * ★ 段与段之间**至少空一行** —— `build_script` 正是按空行分段的。
+ *   不够的话，"打开编辑 → 直接保存"会把所有段落粘成一段，于是排版全变、
+ *   段落导航（上一段/下一段）也失效。
+ * ★ 段**内**的硬换行原样保留（`p.text` 里就带着它们），所以"改两个字再存"
+ *   不会把你粘进来的分行弄丢 —— 那正是这一版要保的东西。
+ * ★ 标题要把 `#` 补回去：后端存的是去掉标记的文本，不补的话保存一次
+ *   标题就退化成普通段落（字号、留白全变）。
  */
 function scriptToText(s: ScriptPayload | null): string {
   if (!s) return "";
-  return s.paragraphs.map((p) => p.text).join("\n\n");
+  return s.paragraphs
+    .map((p, i) => {
+      const body = p.heading ? `# ${p.text}` : p.text;
+      if (i === 0) return body;
+      // 空行数按后端记的来（最少 1 个空行 = 2 个换行）
+      const nl = "\n".repeat(1 + Math.max(1, p.blank_before ?? 1));
+      return nl + body;
+    })
+    .join("");
 }
 
 /**
@@ -158,8 +170,8 @@ export function PasteImport() {
 
         <div className="pb-hint">
           {pasteMode === "edit"
-            ? "改完保存会生成一份新副本，你的原文件不会被改动。段落之间用空行分开。"
-            : "从飞书文档、微信、网页、Word 里直接复制过来都行。段落之间用空行分开。"}
+            ? "改完保存会生成一份新副本，你的原文件不会被改动。换行、空行、缩进都按你写的显示。"
+            : "从飞书文档、微信、网页、Word 里直接复制过来都行。换行、空行、缩进都按你写的显示。"}
         </div>
 
         <div className="pb-row">

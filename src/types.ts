@@ -14,12 +14,18 @@ export interface Sentence {
   text: string;
   align_start: number;
   align_end: number;
+  /** 这一句前面有一个**硬换行**（原文断行，但不是新段落）⇒ 渲染时插 `<br>`。 */
+  line_break_before?: boolean;
 }
 
 export interface Paragraph {
   index: number;
   text: string;
   sentences: Sentence[];
+  /** 这一段前面有几个空行（后端封顶 3），换算成段前留白。 */
+  blank_before?: number;
+  /** Markdown 标题 / 结构行（`# 标题`，`#` 已在后端去掉）。 */
+  heading?: boolean;
 }
 
 export interface ScriptPayload {

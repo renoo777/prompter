@@ -46,9 +46,22 @@ use serde::{Deserialize, Serialize};
 pub struct Paragraph {
     pub index: u32,
     /// 原始文本，保留用户排版，直接用于显示。
+    ///
+    /// ★ 现在**会含 `\n`**（段内的硬换行）与行首空白（缩进）。
+    ///   这两个都是"粘进来什么样就显示什么样"的依据，别在别处再 trim 一遍。
     pub text: String,
     /// 段内句子。
     pub sentences: Vec<Sentence>,
+    /// 这一段前面有几个空行（最多 3）。前端换算成段前留白。
+    ///
+    /// ★ 空行原来是"纯粹的分段符"、不产生任何可见效果 —— 于是 34px 字号下
+    ///   16px 的段距只有半行高，一段接一段看着像连着的一大块。
+    ///   现在把它记下来交给排版，才有"分段"这件事。
+    #[serde(default)]
+    pub blank_before: u32,
+    /// 是不是 Markdown 标题 / 结构行（`# 标题`）。
+    #[serde(default)]
+    pub heading: bool,
 }
 
 /// 一个句子（对位的显示粒度）。
@@ -60,6 +73,13 @@ pub struct Sentence {
     /// 在归一化全稿序列中的起止，左闭右开。
     pub align_start: u32,
     pub align_end: u32,
+    /// 这一句前面有一个**硬换行**（原文里断行，但不是新段落）。
+    ///
+    /// ★ 为什么不把 `\n` 留在 `text` 里让 CSS 去换行：那样换行符会算进
+    ///   句子字符下标，而 `offset_in_sentence` 是按"不含换行的文本"算的
+    ///   ⇒ 点句定位会差位。换行交给渲染层插 `<br>`，字符口径不变。
+    #[serde(default)]
+    pub line_break_before: bool,
 }
 
 /// 归一化后的单个对齐单元。
@@ -221,14 +241,93 @@ pub fn decode_bytes(bytes: &[u8]) -> (String, &'static str) {
 // ---------------------------------------------------------------------------
 
 /// 句末标点 —— 切句依据。
+///
+/// ★ 硬换行（`\n`）**不在**这张表里，它由调用方单独当"行的边界"处理。
+///   混进来的话换行符会跟着进句子文本：渲染时多一个空行、字符下标也把
+///   换行算进去，而 `offset_in_sentence` 是按显示文本算的 ⇒ 点句差一位。
 fn is_sentence_end(c: char) -> bool {
-    matches!(c, '。' | '！' | '？' | '；' | '…' | '!' | '?' | ';' | '\n')
+    matches!(c, '。' | '！' | '？' | '；' | '…' | '!' | '?' | ';')
 }
 
-/// 判断一行是否是 Markdown 标题 / 分隔线 —— 这类行单独成段且不参与朗读定位。
-fn looks_like_heading(line: &str) -> bool {
-    let t = line.trim_start();
-    t.starts_with('#') || t.starts_with("---") || t.starts_with("===")
+/// Markdown 标题 → 去掉标记后的文本；分隔线（`---` / `===`）→ 空串。
+///
+/// ★ 返回 `Some("")` 时调用方要**把这一行整块丢掉**：分隔线归一化后没有一个
+///   可对位的字符，留着只会在正文里显示一排横线。
+/// ★ 标题的 `#` 也必须在这里去掉 —— 原来只让它单独成段、`#` 却留在 `text` 里，
+///   屏幕上就会念出并显示「# 季度复盘」。
+fn heading_of(line: &str) -> Option<String> {
+    let t = line.trim_end();
+    let lead = t.trim_start();
+    if lead.starts_with('#') {
+        return Some(lead.trim_start_matches('#').trim().to_string());
+    }
+    if lead.starts_with("---") || lead.starts_with("===") {
+        return Some(String::new());
+    }
+    None
+}
+
+/// 把一「块」里的多行接起来。
+///
+/// ★ 用一个 `\n` 接，**不再用一个空格拼平** —— 这是「结构化分段」那条需求
+///   的核心：粘进来几行，屏幕上就该是几行。空格拼接会把换行彻底抹掉，
+///   五行话挤成一行，这是"挤成一团"最直接的成因。
+/// ★ 行首空白**保留**（那是缩进），只砍行尾 —— 行尾空白在任何排版里都看不见，
+///   留着只会在 `white-space: pre-wrap` 下把折行位置推歪。
+fn join_lines(lines: &[&str]) -> String {
+    lines
+        .iter()
+        .map(|l| l.trim_end())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// 把块内 `[start, end)` 这一片字符收成一句。
+///
+/// `brk` —— 这一句前面有一个硬换行（段内换行，不是新段落）。
+fn push_sentence(
+    block: &[char],
+    start: usize,
+    end: usize,
+    brk: bool,
+    paragraph_index: u32,
+    sentences: &mut Vec<Sentence>,
+    chars: &mut Vec<AlignChar>,
+) {
+    // 行尾空白（含换行）砍掉；**行首空白保留** —— 那正是缩进
+    let mut stop = end.min(block.len());
+    while stop > start && block[stop - 1].is_whitespace() {
+        stop -= 1;
+    }
+    if stop <= start {
+        return;
+    }
+    let core = &block[start..stop];
+    let text: String = core.iter().collect();
+    let align_start = chars.len() as u32;
+
+    // 逐字符归一化。`offset_in_sentence` 直接取**这句显示文本**里的下标 ——
+    // 两者必须同一口径，否则前端逐字高亮会整体偏一位。
+    for (local_off, ch) in core.iter().enumerate() {
+        if let Some(n) = normalize_char(*ch) {
+            chars.push(AlignChar {
+                ch: n,
+                paragraph: paragraph_index,
+                sentence: sentences.len() as u32,
+                offset_in_sentence: local_off as u32,
+            });
+        }
+    }
+    let align_end = chars.len() as u32;
+
+    sentences.push(Sentence {
+        index: sentences.len() as u32,
+        text,
+        align_start,
+        align_end,
+        // 段的第一句前面没有"上一行"，不该画换行
+        line_break_before: brk && !sentences.is_empty(),
+    });
 }
 
 /// 从纯文本构建稿件。`title` 留空时自动取首行。
@@ -236,82 +335,78 @@ pub fn build_script(raw: &str, title: Option<String>) -> Script {
     let mut paragraphs: Vec<Paragraph> = Vec::new();
     let mut chars: Vec<AlignChar> = Vec::new();
 
-    // 段落切分：空行分段；Markdown 标题行强制单独成段。
-    let mut buf = String::new();
-    let mut blocks: Vec<String> = Vec::new();
-
-    // 闭包本身不被重新赋值（可变状态都走参数传入），所以不需要 `mut`
-    let flush = |buf: &mut String, blocks: &mut Vec<String>| {
-        let t = buf.trim();
-        if !t.is_empty() {
-            blocks.push(t.to_string());
-        }
-        buf.clear();
-    };
+    // ---- 1) 切块：空行是块边界；**块内保留硬换行与行首缩进** ----
+    //
+    // 每块带上「前面有几个空行」—— 那是段前留白的唯一依据。
+    // ★ 上一版这里是把连续非空行用一个空格拼进同一个 `String`，换行与缩进
+    //   同时消失。用户看到的"整篇挤成一大段"就是从这一行开始的。
+    let mut blocks: Vec<(String, u32, bool)> = Vec::new();
+    let mut cur: Vec<&str> = Vec::new();
+    let mut before: u32 = 0;
 
     for line in raw.lines() {
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            flush(&mut buf, &mut blocks);
-        } else if looks_like_heading(trimmed) {
-            flush(&mut buf, &mut blocks);
-            blocks.push(trimmed.to_string());
-        } else {
-            if !buf.is_empty() {
-                buf.push(' ');
+        if line.trim().is_empty() {
+            if !cur.is_empty() {
+                blocks.push((join_lines(&cur), before, false));
+                cur.clear();
+                before = 0;
             }
-            buf.push_str(trimmed);
+            before += 1;
+            continue;
         }
+        if let Some(h) = heading_of(line) {
+            if !cur.is_empty() {
+                blocks.push((join_lines(&cur), before, false));
+                cur.clear();
+                before = 0;
+            }
+            // 分隔线（`---`）剥出来是空串 —— 它不该在正文里留一排横线
+            if !h.is_empty() {
+                blocks.push((h, before, true));
+            }
+            before = 0;
+            continue;
+        }
+        cur.push(line);
     }
-    flush(&mut buf, &mut blocks);
+    if !cur.is_empty() {
+        blocks.push((join_lines(&cur), before, false));
+    }
 
-    for (pi, block) in blocks.iter().enumerate() {
+    // ---- 2) 段内切句：句末标点断开；硬换行只断行、不断段 ----
+    for (pi, (block, blank_before, heading)) in blocks.iter().enumerate() {
         let paragraph_index = pi as u32;
         let mut sentences: Vec<Sentence> = Vec::new();
-
-        // 段内切句：在句末标点处断开，标点归入前一句。
         let chars_of_block: Vec<char> = block.chars().collect();
+
         let mut sent_start = 0usize;
-
-        let push_sentence = |sent_start: usize,
-                                 sent_end: usize,
-                                 sentences: &mut Vec<Sentence>,
-                                 chars: &mut Vec<AlignChar>| {
-            if sent_start >= sent_end {
-                return;
-            }
-            let text: String = chars_of_block[sent_start..sent_end].iter().collect();
-            let align_start = chars.len() as u32;
-
-            // 逐字符归一化，并记录它在本句原始文本里的位置
-            for (local_off, ch) in chars_of_block[sent_start..sent_end].iter().enumerate() {
-                if let Some(n) = normalize_char(*ch) {
-                    chars.push(AlignChar {
-                        ch: n,
-                        paragraph: paragraph_index,
-                        sentence: sentences.len() as u32,
-                        offset_in_sentence: local_off as u32,
-                    });
-                }
-            }
-            let align_end = chars.len() as u32;
-
-            sentences.push(Sentence {
-                index: sentences.len() as u32,
-                text: text.trim().to_string(),
-                align_start,
-                align_end,
-            });
-        };
+        // 下一句前面有没有硬换行。块的第一句一定没有（没有"上一行"）。
+        let mut brk = false;
 
         for (i, c) in chars_of_block.iter().enumerate() {
-            if is_sentence_end(*c) {
-                push_sentence(sent_start, i + 1, &mut sentences, &mut chars);
+            if *c == '\n' {
+                // 换行只结句，**不进句子文本** —— 交给前端画 `<br>`
+                push_sentence(
+                    &chars_of_block, sent_start, i, brk,
+                    paragraph_index, &mut sentences, &mut chars,
+                );
                 sent_start = i + 1;
+                brk = true;
+            } else if is_sentence_end(*c) {
+                // 标点归前一句
+                push_sentence(
+                    &chars_of_block, sent_start, i + 1, brk,
+                    paragraph_index, &mut sentences, &mut chars,
+                );
+                sent_start = i + 1;
+                brk = false;
             }
         }
         // 收尾：最后一段没有句末标点的内容
-        push_sentence(sent_start, chars_of_block.len(), &mut sentences, &mut chars);
+        push_sentence(
+            &chars_of_block, sent_start, chars_of_block.len(), brk,
+            paragraph_index, &mut sentences, &mut chars,
+        );
 
         // 整段归一化后为空（例如纯数字或纯符号）时也保留段落文本，
         // 让用户能看见，只是它不参与定位。
@@ -319,6 +414,9 @@ pub fn build_script(raw: &str, title: Option<String>) -> Script {
             index: paragraph_index,
             text: block.clone(),
             sentences,
+            // 首段前面的空行是"文件开头的空行"，不是段距 —— 不给留白
+            blank_before: if pi == 0 { 0 } else { (*blank_before).min(3) },
+            heading: *heading,
         });
     }
 
@@ -409,11 +507,99 @@ mod tests {
     }
 
     #[test]
-    fn consecutive_lines_merge_into_one_paragraph() {
+    fn consecutive_lines_stay_separate_lines_inside_one_paragraph() {
+        // ★ 这一条守的是「结构化分段」的地基。
+        //   上一版把连续非空行用一个空格拼成一行，用户粘五句话进来就变成
+        //   一大段 —— 这是"挤成一团"最直接的成因。现在块内保留硬换行：
+        //   同一个段落（空行才算分段），但行与行之间必须记得住"这里断过行"。
         let s = build_script("第一行\n第二行\n\n另起一段", None);
+        assert_eq!(s.paragraphs.len(), 2, "空行才是段落边界");
+        assert_eq!(s.paragraphs[0].text, "第一行\n第二行");
+        assert_eq!(s.paragraphs[0].sentences.len(), 2);
+        assert!(
+            !s.paragraphs[0].sentences[0].line_break_before,
+            "段的第一句前面没有上一行，不该画换行"
+        );
+        assert!(
+            s.paragraphs[0].sentences[1].line_break_before,
+            "第二行前面有一个硬换行，必须标出来"
+        );
+        // 换行符不能留在句子文本里 —— 否则字符下标会把换行算进去，点句差一位
+        assert_eq!(s.paragraphs[0].sentences[0].text, "第一行");
+        assert_eq!(s.paragraphs[0].sentences[1].text, "第二行");
+    }
+
+    #[test]
+    fn blank_lines_become_paragraph_spacing() {
+        // 空行不产生可见留白的时候，段落之间只有 16px，看着还是连着的
+        let s = build_script("甲段\n\n\n乙段", None);
         assert_eq!(s.paragraphs.len(), 2);
-        assert!(s.paragraphs[0].text.contains("第一行"));
-        assert!(s.paragraphs[0].text.contains("第二行"));
+        assert_eq!(s.paragraphs[1].blank_before, 2, "两个空行要记成 2");
+        // 文件开头的空行不是段距
+        let s2 = build_script("\n\n甲段", None);
+        assert_eq!(s2.paragraphs[0].blank_before, 0);
+        // 封顶 3 —— 粘一份中间夹了十行空行的稿子，不该出现半屏空白
+        let s3 = build_script("甲\n\n\n\n\n\n乙", None);
+        assert_eq!(s3.paragraphs[1].blank_before, 3);
+    }
+
+    #[test]
+    fn markdown_heading_loses_its_hashes() {
+        // 原来 `#` 只被用来"单独成段"，字符本身留在了 text 里 ⇒ 屏幕上显示「# 季度复盘」
+        let s = build_script("# 季度复盘\n\n正文内容", None);
+        assert!(s.paragraphs[0].heading);
+        assert_eq!(s.paragraphs[0].text, "季度复盘");
+        assert!(!s.paragraphs[1].heading);
+        // 标题的自动取题不该带 `#`
+        assert_eq!(s.title, "季度复盘");
+    }
+
+    #[test]
+    fn separator_lines_are_dropped() {
+        // `---` 归一化后没有任何可对位字符，留着只会在正文里显示一排横线
+        let s = build_script("上段\n\n---\n\n下段", None);
+        assert_eq!(s.paragraphs.len(), 2);
+        assert!(!s.paragraphs.iter().any(|p| p.text.contains("---")));
+    }
+
+    #[test]
+    fn indentation_is_kept_and_offsets_match_the_displayed_text() {
+        // 行首空白是缩进，必须留；而 `offset_in_sentence` 必须按**显示文本**算
+        // （含那几个空格），否则逐字高亮会整体偏一位。
+        let s = build_script("  营收增长。", None);
+        let p = &s.paragraphs[0];
+        assert_eq!(p.text, "  营收增长。");
+        let sent = &p.sentences[0];
+        assert_eq!(sent.text, "  营收增长。");
+        let first = &s.chars[sent.align_start as usize];
+        assert_eq!(first.ch, '营');
+        assert_eq!(first.offset_in_sentence, 2, "前面两个空格也要算进去");
+    }
+
+    #[test]
+    fn sentence_texts_concatenate_to_the_paragraph_text_minus_newlines() {
+        // ★ 这是"点句 / 逐字高亮"的**契约**，不是巧合：
+        //   前端 `charIndexAt` 按 DOM 里的文本节点累加字符下标去找句子，
+        //   而 DOM 文本恰好等于"各句文本相接"（换行由 `<br>` 画，不产生文本节点）。
+        //   任何一句多吃或少吃一个字符（典型：把换行算进某一句、或悄悄 trim 掉
+        //   行首缩进），下标就整体错位 —— 症状是"点了这一句跳到上一句"，
+        //   而且只在有换行/缩进的稿子上出现，极难复现。
+        for raw in [
+            "纯一行。",
+            "第一行\n第二行。\n第三行",
+            "  缩进行一。\n  缩进行二。",
+            "# 标题\n\n正文一。正文二！\n\n\n再一段",
+        ] {
+            let s = build_script(raw, None);
+            for p in &s.paragraphs {
+                let joined: String = p.sentences.iter().map(|x| x.text.as_str()).collect();
+                assert_eq!(
+                    joined,
+                    p.text.replace('\n', ""),
+                    "段落文本与句子拼接不一致：{raw:?}"
+                );
+            }
+        }
     }
 
     #[test]

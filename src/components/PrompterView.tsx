@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, MouseEvent as ReactMouseEvent, ReactNode } from "react";
 
 import { api } from "../lib/api";
@@ -298,8 +298,21 @@ function Para({
 }) {
   return (
     <p
-      className={`para${paraIsRead && dimRead ? " read" : ""}`}
-      style={{ "--dist": dist } as CSSProperties}
+      className={`para${paraIsRead && dimRead ? " read" : ""}${
+        para.heading ? " head" : ""
+      }`}
+      style={
+        {
+          "--dist": dist,
+          /*
+            段前留白 = 原文里这一段前面有几个空行（后端已封顶 3）。
+            ★ 这一条是「结构化分段」的另一半：光保留换行还不够 ——
+              空行如果只是"分段符"而不产生留白，段落之间就只有 16px，
+              34px 字号下不到半行高，看着仍然是连成一整块。
+          */
+          "--blank": Math.min(para.blank_before ?? 0, 3),
+        } as CSSProperties
+      }
       onPointerDown={(e) => {
         downRef.current = { x: e.clientX, y: e.clientY };
       }}
@@ -323,22 +336,30 @@ function Para({
             activeHit.sentence === s.index;
 
           return (
-            <span
-              key={s.index}
-              {...(isCurrent ? { "data-current": "1" } : {})}
-              data-sekey={seKey(para.index, s.index)}
-              className={`sentence${isCurrent ? " current" : ""}${
-                isActiveSe ? " hit-se" : ""
-              }`}
-            >
-              {isCurrent
-                ? // 读到的那个字优先于搜索高亮：两个高亮叠在同一处
-                  // 会让"正在念哪个字"变得看不清，而那是更重要的信息
-                  renderSentence(s.text, cursor?.offset_in_sentence ?? 0)
-                : seHits
-                  ? renderWithHits(s.text, seHits, activeOrdinal)
-                  : s.text}
-            </span>
+            /*
+              `<br>` 就是「原文这里断过行」。
+              ★ 换行交给元素画、不塞进句子文本：`charIndexAt` 是按 DOM 文本节点
+                累加字符下标的，`<br>` 不产生文本节点 ⇒ 下标口径与 `text`
+                严格一致，点句定位不会因为多了换行而差位。
+            */
+            <Fragment key={s.index}>
+              {s.line_break_before ? <br /> : null}
+              <span
+                {...(isCurrent ? { "data-current": "1" } : {})}
+                data-sekey={seKey(para.index, s.index)}
+                className={`sentence${isCurrent ? " current" : ""}${
+                  isActiveSe ? " hit-se" : ""
+                }`}
+              >
+                {isCurrent
+                  ? // 读到的那个字优先于搜索高亮：两个高亮叠在同一处
+                    // 会让"正在念哪个字"变得看不清，而那是更重要的信息
+                    renderSentence(s.text, cursor?.offset_in_sentence ?? 0)
+                  : seHits
+                    ? renderWithHits(s.text, seHits, activeOrdinal)
+                    : s.text}
+              </span>
+            </Fragment>
           );
         })
       )}

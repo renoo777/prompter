@@ -38,31 +38,51 @@
 
 const params = new URLSearchParams(location.search);
 
+/*
+ * 示例稿：**故意带结构** —— 一个标题、一处段内硬换行、一处两连空行。
+ *
+ * 预览如果只用"一坨没换行的正文"，这一版新增的排版（标题档位、段前留白、
+ * 段内换行）在图上永远看不见，等于没有验收手段。
+ */
 const paragraphs = [
-  {
-    index: 0,
-    text: "各位下午好。今天的汇报分三个部分：先看上半年的整体完成情况，再讲三个重点项目的进展，最后是下半年的安排。",
-  },
+  { index: 0, heading: true, blank_before: 0, text: "2026 上半年经营汇报" },
   {
     index: 1,
-    text: "先说第一部分。上半年我们一共交付了十四个版本，比去年同期多了五个，其中三个是给外部客户做的定制。",
+    blank_before: 1,
+    text:
+      "各位下午好。今天的汇报分三个部分：\n" +
+      "先看上半年的整体完成情况，再讲三个重点项目的进展，最后是下半年的安排。",
   },
   {
     index: 2,
-    text: "这里有一件事要单独提一下：六月份那次上线比原计划晚了四天，原因是第三方接口的联调比预期复杂。",
+    blank_before: 1,
+    text: "先说第一部分。上半年我们一共交付了十四个版本，比去年同期多了五个，其中三个是给外部客户做的定制。",
   },
   {
     index: 3,
+    blank_before: 2,
+    text: "这里有一件事要单独提一下：六月份那次上线比原计划晚了四天，原因是第三方接口的联调比预期复杂。",
+  },
+  {
+    index: 4,
+    blank_before: 1,
     text: "第二个部分讲重点项目。第一个是数据中台，目前已经完成主体功能，正在做压测，预计下个月可以正式上线。",
   },
 ].map((p) => {
-  // 句号切开，和后端 script.rs 的口径一致（逐句可点）
-  const parts = p.text.split(/(?<=[。！？])/).filter(Boolean);
+  // 句号与**硬换行**都切开，和后端 script.rs 的口径一致（逐句可点）
+  const sentences = [];
   let cursor = 0;
-  const sentences = parts.map((t, i) => {
-    const s = { index: i, text: t, align_start: cursor, align_end: cursor + t.length };
-    cursor += t.length;
-    return s;
+  p.text.split("\n").forEach((line, li) => {
+    line.split(/(?<=[。！？])/).filter(Boolean).forEach((t, si) => {
+      sentences.push({
+        index: sentences.length,
+        text: t,
+        align_start: cursor,
+        align_end: cursor + t.length,
+        line_break_before: li > 0 && si === 0,
+      });
+      cursor += t.length;
+    });
   });
   return { ...p, sentences };
 });

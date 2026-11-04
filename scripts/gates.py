@@ -5,8 +5,8 @@
     python scripts/gates.py --build    # 再出一次 release 产物（= npm run tauri:build）
 
 四道门槛（见 docs/判断基线.md）：
-  1. cargo test --lib                     期望 112 passed / 6 ignored
-  2. cargo test --lib --no-default-features 期望 96 passed
+  1. cargo test --lib                     期望 118 passed / 6 ignored
+  2. cargo test --lib --no-default-features 期望 102 passed
   3. 上面两次构建零警告
   4. tsc --noEmit 零错 + vite build 通过 + 静态前端检查（STATIC_CHECKS，
      目前是 check-tooltips.py / check-hook-order.py / check-hover-silent.py /
@@ -129,9 +129,17 @@ NPM = "npm.cmd" if IS_WIN else "npm"
 #   `glass_mode` 迁移 2 条）。仍然不依赖 local-asr —— 与被守的东西一致。
 #   ★ 真踩：先写成了 +3（只数了 effects 那三条），门槛直接报"数字变了"——
 #     这道断言的价值就在这儿，它不许你凭印象改数字。
+# ★ 2026-11-04（结构化分段轮）112→118 / 96→102：两处都 +6，全部来自
+#   `script::build_script` 的新口径与它的契约测试（硬换行保留 / 空行记成段距 /
+#   标题去掉 `#` / 分隔线丢弃 / 缩进与字符下标对齐 / 句子拼接 == 段落文本）,
+#   外加 docx 段落边界那一条。
+#   两个 feature 组合下同样是 +6 —— 这些测试都在纯文本层，不依赖 local-asr。
+#   ★ 注意"改口径"必须成对：`consecutive_lines_merge_into_one_paragraph`
+#     这条旧测试被**改名并改写**成 `..._stay_separate_lines_...`（一进一出），
+#     所以净增是 +6 而不是 +7。
 EXPECT = {
-    "default": {"passed": 112, "ignored": 6},
-    "no-default-features": {"passed": 96},
+    "default": {"passed": 118, "ignored": 6},
+    "no-default-features": {"passed": 102},
 }
 
 
@@ -164,9 +172,24 @@ def parse_result(out):
 
 
 def warning_lines(out):
-    """Rust 警告行（`warning: ...`），排除摘要行。"""
+    """Rust 警告行（`warning: ...`），排除摘要行，以及 cargo 自己的收尾噪声。
+
+    ★ 唯一放行的一条是 cargo 清理**增量会话锁**失败：
+
+        warning: error deleting lock file for incremental compilation session
+        directory `...target/debug/incremental/...lock`: 拒绝访问。 (os error 5)
+
+    判据：它点名的是 `target/` 下的文件、由 cargo 在**进程退出时**做清理时产生，
+    和源码无关，也同样出现在 `git stash` 前的老代码上（本机 `target/debug/incremental`
+    里 2026-09-25 起的会话目录全都留着 `.lock`，即长期如此）——根因是杀毒/索引
+    在 cargo 退出那一瞬还握着句柄。**只放行这一条的原文前缀**，任何别的新警告
+    仍然会让门槛报红：放宽的是一条噪声，不是"警告"这个门。
+    """
+    NOISE = "error deleting lock file for incremental compilation session directory"
     return [l for l in out.splitlines()
-            if l.strip().startswith("warning:") and "generated" not in l]
+            if l.strip().startswith("warning:")
+            and "generated" not in l
+            and NOISE not in l]
 
 
 def main():

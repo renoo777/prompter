@@ -138,8 +138,12 @@ fn unescape_xml(s: &str) -> String {
 ///
 /// * `text_tags` —— 本地名命中这些元素的，其**紧跟标签之后**的文本节点被采集。
 ///   docx 是 `t`（`<w:t>`），pptx 也是 `t`（`<a:t>`）。
-/// * `break_tags` —— 本地名命中这些元素的，**闭合处**产出一个换行（段落边界）；
-///   若是自闭合写法（`<w:br/>`、`<a:br/>`），开标签处即产出换行。
+/// * `para_tags` —— **段落边界**（`<w:p>` / `<a:p>`）。闭合处产出**两个**换行。
+///   ★ 必须与下面的「段内换行」分开：Word 里每一个回车都是一个 `<w:p>`，
+///   而 `build_script` 是靠**空行**分段的 —— 两者都用单个 `\n` 的话，
+///   整份 Word 会粘成一大段（这正是"从 Word 导进来挤成一团"的成因）。
+/// * `break_tags` —— **段内换行**（`<w:br/>` / `<a:br/>`）。闭合处产出一个换行；
+///   自闭合写法在开标签处即产出。
 /// * `skip_tags` —— 在其内部**完全不采集**文本。用来丢掉 PPT 备注页里的
 ///   "幻灯片编号"字段（`<a:fld type="slidenum">` 里也会有一个 `<a:t>1</a:t>`，
 ///   不排掉的话每页会多出一个孤零零的数字行）。
@@ -149,7 +153,13 @@ fn unescape_xml(s: &str) -> String {
 /// 按 `<` 切开。切出来的每一段形如 `w:t>文字` —— 前半是标签（不含 `<`），
 /// 后半是它的尾随文本。能这么切的前提是正文里的 `<` 已被转义成 `&lt;`
 /// （Office 生成时一定会转），所以文本节点里不会再出现 `<`。
-pub fn extract_from_xml(xml: &str, text_tags: &[&str], break_tags: &[&str], skip_tags: &[&str]) -> String {
+pub fn extract_from_xml(
+    xml: &str,
+    text_tags: &[&str],
+    para_tags: &[&str],
+    break_tags: &[&str],
+    skip_tags: &[&str],
+) -> String {
     let mut out = String::new();
     let mut capturing = 0usize;
     let mut skipping = 0usize;
@@ -179,11 +189,16 @@ pub fn extract_from_xml(xml: &str, text_tags: &[&str], break_tags: &[&str], skip
             if text_tags.contains(&name) {
                 capturing = capturing.saturating_sub(1);
             }
-            if break_tags.contains(&name) {
+            // 段落边界优先判：两个换行 = 一个空行 = build_script 眼里的一段
+            if para_tags.contains(&name) {
+                out.push_str("\n\n");
+            } else if break_tags.contains(&name) {
                 out.push('\n');
             }
         } else if self_closing {
-            if break_tags.contains(&name) {
+            if para_tags.contains(&name) {
+                out.push_str("\n\n");
+            } else if break_tags.contains(&name) {
                 out.push('\n');
             }
         } else {
@@ -203,37 +218,49 @@ pub fn extract_from_xml(xml: &str, text_tags: &[&str], break_tags: &[&str], skip
     out
 }
 
-/// docx 正文 → 文本。段落边界是 `</w:p>`，`<w:br/>` 是段内换行。
+/// docx 正文 → 文本。段落边界是 `</w:p>`（→ 空行），段内换行是 `<w:br/>`（→ 单换行）。
 pub fn docx_text(xml: &str) -> String {
     // skip 为空：`<w:instrText>`（域代码）的本地名是 `instrText` 而非 `t`，
     // 天然不会被采集；`<w:fldSimple>` 里的缓存结果是真文本，应当保留。
-    extract_from_xml(xml, &["t"], &["p", "br"], &[])
+    extract_from_xml(xml, &["t"], &["p"], &["br"], &[])
 }
 
 /// pptx 单页（备注页或幻灯片）→ 文本。
 pub fn pptx_page_text(xml: &str) -> String {
     // `<a:fld type="slidenum">` 放的是"第几页"这种自动编号 —— 不是讲稿，
     // 排掉它，否则每页正文前面都会多出一个孤立的数字。
-    extract_from_xml(xml, &["t"], &["p", "br"], &["fld"])
+    extract_from_xml(xml, &["t"], &["p"], &["br"], &["fld"])
 }
 
-/// 去掉多余空行（抽出来的正文常见连续空段落）。
+/// 收尾：砍行尾空白、连续空行最多留一个、去掉首尾空行。
+///
+/// ★ 与上一版的两处区别，都是为了"原样显示"：
+///   ① **不再 trim 行首** —— 行首那几个空格是缩进，砍掉就等于把层级抹平；
+///   ② 段落边界现在写成两个换行，所以这里"连续空行压成一个"的规则
+///      保住的正是「段落之间空一行」，不会把段落再粘回去。
 fn tidy(s: &str) -> String {
-    let mut lines: Vec<&str> = Vec::new();
+    let mut lines: Vec<String> = Vec::new();
     for line in s.lines() {
-        let t = line.trim();
+        let t = line.trim_end();
         if t.is_empty() {
+            // 开头就是空行：不留（不然每个文件前面都顶一块白）
+            if lines.is_empty() {
+                continue;
+            }
             // 连续空行最多保留一个 —— 空行是分段依据，全删会粘连段落，
             // 全留则会得到一屏空行
             if lines.last().map(|l| l.is_empty()).unwrap_or(false) {
                 continue;
             }
-            lines.push("");
+            lines.push(String::new());
         } else {
-            lines.push(t);
+            lines.push(t.to_string());
         }
     }
-    lines.join("\n").trim().to_string()
+    while lines.last().map(|l| l.is_empty()).unwrap_or(false) {
+        lines.pop();
+    }
+    lines.join("\n")
 }
 
 // ---------------------------------------------------------------------------
@@ -364,13 +391,15 @@ mod tests {
     use std::io::Write;
 
     #[test]
-    fn docx_paragraphs_become_lines() {
-        // 真实 docx 里 </w:p> 是两个标签：`/w:r` 与 `/w:p`，扫描器只看本地名
+    fn docx_paragraphs_become_blank_line_separated() {
+        // 真实 docx 里 </w:p> 是两个标签：`/w:r` 与 `/w:p`，扫描器只看本地名。
+        // ★ 段落边界必须产出**空行**（两个换行）：`build_script` 是按空行分段的，
+        //   只给一个换行的话整份 Word 会变成一大段 —— 用户看到的就是"挤成一团"。
         let xml = "<w:document><w:body>\
             <w:p><w:r><w:t>第一段</w:t></w:r></w:p>\
             <w:p><w:r><w:t>第二段</w:t></w:r><w:r><w:t>的后半句</w:t></w:r></w:p>\
             </w:body></w:document>";
-        assert_eq!(docx_text(xml), "第一段\n第二段的后半句\n");
+        assert_eq!(docx_text(xml), "第一段\n\n第二段的后半句\n\n");
     }
 
     #[test]
@@ -378,13 +407,23 @@ mod tests {
         // Word 会把一句话切成多个 run（改一次格式就多一个）。
         // 同一段里的多个 <w:t> 必须拼在**同一行**，否则每个 run 都会变成一段。
         let xml = "<w:p><w:r><w:t>营收</w:t></w:r><w:r><w:t>增长</w:t></w:r><w:r><w:t>明显</w:t></w:r></w:p>";
-        assert_eq!(docx_text(xml), "营收增长明显\n");
+        assert_eq!(docx_text(xml), "营收增长明显\n\n");
     }
 
     #[test]
-    fn docx_br_is_a_line_break_but_stays_its_own_paragraph() {
+    fn docx_br_is_a_line_break_inside_the_same_paragraph() {
+        // `<w:br/>` 是**段内换行**（Shift+Enter），不是新段落 —— 只给一个换行，
+        // 这样它在 build_script 里仍然属于同一段，只是记得"这里断过行"。
         let xml = "<w:p><w:r><w:t>上句</w:t><w:br/><w:t>下句</w:t></w:r></w:p>";
-        assert_eq!(docx_text(xml), "上句\n下句\n");
+        assert_eq!(docx_text(xml), "上句\n下句\n\n");
+    }
+
+    #[test]
+    fn tidy_keeps_indentation_but_drops_trailing_spaces() {
+        // 行首是缩进，必须留；行尾看不见，留着只会把折行位置推歪
+        assert_eq!(tidy("  第一行   \n  第二行\n"), "  第一行\n  第二行");
+        // 段落之间仍然只有一个空行
+        assert_eq!(tidy("甲\n\n\n\n乙\n"), "甲\n\n乙");
     }
 
     #[test]
@@ -410,7 +449,7 @@ mod tests {
             <a:p><a:fld id=\"{1}\" type=\"slidenum\"><a:t>3</a:t></a:fld></a:p>\
             <a:p><a:r><a:t>各位好，本页讲成本。</a:t></a:r></a:p>\
             </p:txBody></p:sp>";
-        assert_eq!(pptx_page_text(xml), "\n各位好，本页讲成本。\n");
+        assert_eq!(pptx_page_text(xml), "\n\n各位好，本页讲成本。\n\n");
         assert!(!pptx_page_text(xml).contains('3'));
     }
 
@@ -445,7 +484,7 @@ mod tests {
         let bytes = z.finish().unwrap().into_inner();
 
         let text = extract_rich(&bytes, "docx").unwrap();
-        assert_eq!(text, "季度复盘\n营收环比提升。");
+        assert_eq!(text, "季度复盘\n\n营收环比提升。");
     }
 
     #[test]
