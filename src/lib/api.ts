@@ -15,6 +15,7 @@ import type {
   DragHint,
   MicProbe,
   ModelPaths,
+  ParaStyle,
   PreflightRow,
   ScriptEntry,
   ScriptPayload,
@@ -28,6 +29,18 @@ export const api = {
   setScriptText: (text: string, title?: string) =>
     invoke<ScriptPayload>("set_script_text", { text, title: title ?? null }),
   clearScript: () => invoke<ScriptPayload>("clear_script"),
+
+  /**
+   * 给某一段设样式（传 `null` ＝ 清除这一段的样式）。返回整份稿件。
+   *
+   * ★ 返回整份而不是"成功"两个字：样式是段落的属性，改完要按新载荷重渲染。
+   *   只回一个布尔的话，前端得自己算一遍"现在这一段该长什么样" ——
+   *   那就是同一份判断的第二份实现。
+   * ★ 它**不改文本**，所以光标与对位都不受影响；但调用方也不能拿它当
+   *   "换稿"处理（换稿会把进度归零）。
+   */
+  setParagraphStyle: (paragraph: number, style: ParaStyle | null) =>
+    invoke<ScriptPayload>("set_paragraph_style", { paragraph, style }),
 
   /** 把一段文本当作识别结果喂给对位器（无需麦克风的联调入口）。 */
   feed: (text: string) => invoke<CursorPayload>("feed_hypothesis", { text }),

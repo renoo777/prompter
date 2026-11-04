@@ -1,10 +1,10 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, MouseEvent as ReactMouseEvent, ReactNode } from "react";
 
-import { api } from "../lib/api";
+import { api, errText } from "../lib/api";
 import { findHits, groupHits, seKey, type Hit } from "../lib/find";
 import { useApp } from "../lib/store";
-import type { Paragraph } from "../types";
+import type { ParaStyle, Paragraph, StylePresets } from "../types";
 
 /**
  * 手动接管后「让位」多久（毫秒）。
@@ -252,6 +252,18 @@ function sentenceAtChar(par: Paragraph, off: number): number | null {
 }
 
 /**
+ * 段落开头几个字 —— 浮条上用来指认"改的是哪一段"。
+ *
+ * ★ 为什么不显示"第 3 段"：段落序号在界面上根本不存在，用户没法核对。
+ *   而开头那几个字是他自己写的，一眼就能对上。段内的换行与连续空格要
+ *   压成一个空格，否则浮条会被撑成两行。
+ */
+function head(text: string, n = 8): string {
+  const chars = Array.from(text.replace(/\s+/g, " ").trim());
+  return chars.length > n ? `${chars.slice(0, n).join("")}…` : chars.join("");
+}
+
+/**
  * 一整个段落。
  *
  * ★ 「接进度」挂在这一层（段落），不挂到句子上去：句子是 inline 盒，
@@ -280,6 +292,9 @@ function Para({
   quickJump,
   downRef,
   seekFromPoint,
+  styleEdit,
+  selected,
+  onPick,
 }: {
   para: Paragraph;
   dist: number;
@@ -295,12 +310,32 @@ function Para({
   /** 指针按下时的坐标。`useRef` 的 `.current` 是只读的，所以要 `MutableRefObject`。 */
   downRef: React.MutableRefObject<{ x: number; y: number } | null>;
   seekFromPoint: (e: ReactMouseEvent<HTMLParagraphElement>, p: Paragraph) => void;
+  /** 「标重点」模式：点击＝选中这一段，而不是把朗读进度接过去。 */
+  styleEdit: boolean;
+  selected: boolean;
+  onPick: () => void;
 }) {
+  const st = para.style ?? null;
+
+  /*
+    用户标的样式走**内联 CSS 变量**，具体颜色仍然定义在 styles.css 的主题块里。
+    ★ 不在 JS 里写死色值：深色/浅色/磨砂三档主题各有一套能看清的颜色，
+      写进 JS 就只剩一套了。这里只交出"第几号预设"，颜色由 CSS 决定。
+  */
+  const markVars = {
+    ...(st?.color != null ? { "--pc": `var(--mark-${st.color})` } : {}),
+    ...(st?.bg != null ? { "--pb": `var(--markbg-${st.bg})` } : {}),
+    ...(st?.bold ? { fontWeight: 600 } : {}),
+    ...(st?.italic ? { fontStyle: "italic" } : {}),
+  } as CSSProperties;
+
   return (
     <p
+      {...(st?.color != null ? { "data-pc": "" } : {})}
+      {...(st?.bg != null ? { "data-pb": "" } : {})}
       className={`para${paraIsRead && dimRead ? " read" : ""}${
         para.heading ? " head" : ""
-      }`}
+      }${selected ? " sel" : ""}`}
       style={
         {
           "--dist": dist,
@@ -311,17 +346,20 @@ function Para({
               34px 字号下不到半行高，看着仍然是连成一整块。
           */
           "--blank": Math.min(para.blank_before ?? 0, 3),
+          ...markVars,
         } as CSSProperties
       }
       onPointerDown={(e) => {
         downRef.current = { x: e.clientX, y: e.clientY };
       }}
-      {...(quickJump
-        ? { onClick: (e: ReactMouseEvent<HTMLParagraphElement>) => seekFromPoint(e, para) }
-        : {
-            onDoubleClick: (e: ReactMouseEvent<HTMLParagraphElement>) =>
-              seekFromPoint(e, para),
-          })}
+      {...(styleEdit
+        ? { onClick: () => onPick() }
+        : quickJump
+          ? { onClick: (e: ReactMouseEvent<HTMLParagraphElement>) => seekFromPoint(e, para) }
+          : {
+              onDoubleClick: (e: ReactMouseEvent<HTMLParagraphElement>) =>
+                seekFromPoint(e, para),
+            })}
     >
       {para.sentences.length === 0 ? (
         // 归一化后为空的段落（纯数字、纯符号）—— 显示原文但不参与定位
@@ -367,10 +405,113 @@ function Para({
   );
 }
 
+/**
+ * 「标重点」的浮条。
+ *
+ * # 为什么是底部浮条，不是侧边面板
+ *
+ * 改样式时眼睛要盯着**那一段字**，任何占掉正文宽度的面板都会让版面重排 ——
+ * 用户是在调"这一段看起来什么分量"，版面一动他就失去参照。浮条只压住
+ * 视口底部那一条（这段正文在编辑时本来就不要求完整可见），
+ * 正文的水平宽度一点不损失。
+ *
+ * # 为什么每个色块都不写提示文字
+ *
+ * 界面零悬停提示是硬规矩（`title` / 自绘气泡全禁）。所以这里的可读性
+ * 全靠**形状**：字色是圆点、底色是方块、加粗是粗体的 B、斜体是斜体的 I。
+ * 两组色块各有一个两字标签（「字色」「底色」）—— 它们不是说明，
+ * 是**防止选错**：两排色块长得一样，选错一次就把整段刷成底色了。
+ *
+ * # 为什么再点一次已选中的色块＝取消
+ *
+ * 「清除」能清掉全部，但用户常常只想退掉其中一样。点回原色块就是
+ * 最直接的那条路，而且不需要多一颗控件。
+ */
+function StyleBar({
+  presets,
+  where,
+  style,
+  onToggle,
+  onColor,
+  onBg,
+  onClear,
+  onDone,
+}: {
+  presets: StylePresets;
+  /** 选中段落的开头几个字；`null` ＝ 还没选。 */
+  where: string | null;
+  style: ParaStyle | null;
+  onToggle: (k: "bold" | "italic") => void;
+  onColor: (i: number | null) => void;
+  onBg: (i: number | null) => void;
+  onClear: () => void;
+  onDone: () => void;
+}) {
+  // 色块的数量由**后端**给（`style_presets`），前端不写死 —— 后端加一个颜色，
+  // 这里自动多一颗；写死的话表现为"新颜色在界面上根本不存在"。
+  const colors = Array.from({ length: presets.colors }, (_, i) => i);
+  const bgs = Array.from({ length: presets.bgs }, (_, i) => i);
+
+  return (
+    <div className="stylebar" data-interactive>
+      {where == null ? (
+        <span className="sb-hint">点一段文字，再选样式</span>
+      ) : (
+        <>
+          <span className="sb-where">「{where}」</span>
+          <button
+            className={`sb-bi${style?.bold ? " on" : ""}`}
+            aria-label="加粗"
+            aria-pressed={!!style?.bold}
+            onClick={() => onToggle("bold")}
+          >
+            B
+          </button>
+          <button
+            className={`sb-bi it${style?.italic ? " on" : ""}`}
+            aria-label="斜体"
+            aria-pressed={!!style?.italic}
+            onClick={() => onToggle("italic")}
+          >
+            I
+          </button>
+          <span className="sb-k">字色</span>
+          {colors.map((i) => (
+            <button
+              key={`c${i}`}
+              className={`sb-sw c${style?.color === i ? " on" : ""}`}
+              style={{ "--sw": `var(--mark-${i})` } as CSSProperties}
+              aria-label={`字色 ${i + 1}`}
+              aria-pressed={style?.color === i}
+              onClick={() => onColor(style?.color === i ? null : i)}
+            />
+          ))}
+          <span className="sb-k">底色</span>
+          {bgs.map((i) => (
+            <button
+              key={`b${i}`}
+              className={`sb-sw sq${style?.bg === i ? " on" : ""}`}
+              style={{ "--sw": `var(--markbg-${i})` } as CSSProperties}
+              aria-label={`底色 ${i + 1}`}
+              aria-pressed={style?.bg === i}
+              onClick={() => onBg(style?.bg === i ? null : i)}
+            />
+          ))}
+          <button className="btn sb-clear" onClick={onClear}>
+            清除
+          </button>
+        </>
+      )}
+      <button className="btn primary sb-done" onClick={onDone}>
+        完成
+      </button>
+    </div>
+  );
+}
+
 export function PrompterView() {
   const { state, dispatch } = useApp();
   const containerRef = useRef<HTMLDivElement>(null);
-
   const { script, cursor, config } = state;
 
   // 垂直锚点：当前句放在视口高度的百分之多少处。
@@ -392,6 +533,35 @@ export function PrompterView() {
   // 按下点。用来把"点击"与"拖选"分开（见 `seekFromPoint`）。
   // 用 ref 不用 state：它一变就重渲染，而这是个纯机械的判断。
   const downRef = useRef<{ x: number; y: number } | null>(null);
+
+  // ---- 标重点（段落样式）----
+  //
+  // 选中哪一段是**这个界面**的事（后端只知道"现在这一段的样式是什么"），
+  // 所以放在组件本地状态里。它一变就重渲染正文，这是要的 ——
+  // 选中环必须立刻出现，否则用户不知道自己点上了没有。
+  const styleEdit = state.styleEdit;
+  const [sel, setSel] = useState<number | null>(null);
+
+  /*
+    进模式、或者换了一份稿，都把选中清掉。
+    ★ 用「标题 + 字数」当稿件的身份，而不是 `script` 对象本身：改一次样式
+      后端就会回一份**新的** `ScriptPayload`，按对象判会把选中清掉 ——
+      表现是"点一下色块，选中的那一段就掉选了"，改第二下得重新点。
+  */
+  const scriptKey = `${script?.title ?? ""}|${script?.total_chars ?? 0}`;
+  useEffect(() => {
+    if (styleEdit) setSel(null);
+  }, [styleEdit, scriptKey]);
+
+  // Esc 退出。这个模式接管了点击，所以必须有一个不靠点击的退出口。
+  useEffect(() => {
+    if (!styleEdit) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") dispatch({ type: "STYLE_EDIT", on: false });
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [styleEdit, dispatch]);
 
   // ---- 稿内查找 ----
   //
@@ -472,6 +642,9 @@ export function PrompterView() {
     if (state.collapsed) return;
     if (manual) return;
     if (findActive) return;
+    // 标重点时**不自动滚**：用户正在点某一段，画面跟着语音跑会把
+    // 他要改的那一段拽走 —— 那正是"点了没点上"的经典成因。
+    if (styleEdit) return;
     const el = container.querySelector<HTMLElement>("[data-current='1']");
     if (!el) return;
 
@@ -480,7 +653,7 @@ export function PrompterView() {
     const target = container.scrollTop + (eRect.top - cRect.top) - container.clientHeight * anchor;
     container.scrollTo({ top: Math.max(0, target), behavior: scrollBehavior });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [cursor?.paragraph, cursor?.sentence, state.collapsed, anchor, manual, findActive, scrollBehavior]);
+  }, [cursor?.paragraph, cursor?.sentence, state.collapsed, anchor, manual, findActive, scrollBehavior, styleEdit]);
 
   if (!script || script.total_chars === 0) {
     return (
@@ -532,6 +705,43 @@ export function PrompterView() {
     if (s) seekTo(s.align_start);
   }
 
+  // ---- 标重点：改样式 ----
+
+  // `sel` 是段落数组下标；换稿后它可能越界 ⇒ 越界就当没选，
+  // 而不是拿一个失效的序号去改别的段落。
+  const selPara = sel != null ? (script.paragraphs[sel] ?? null) : null;
+
+  /**
+   * 改样式后重渲染。
+   *
+   * ★ 走 `SCRIPT_STYLE` 而不是 `SCRIPT`：后者会把朗读进度归零。
+   *   改一段字的颜色就把进度打回开头，用户会以为"点了个样式，稿子重念了"。
+   * ★ 失败要说出来：样式没写上却没有任何反馈，用户会反复点，最后得出
+   *   "这个功能时灵时不灵"。
+   */
+  async function applyStyle(index: number, next: ParaStyle | null) {
+    try {
+      const s = await api.setParagraphStyle(index, next);
+      dispatch({ type: "SCRIPT_STYLE", script: s });
+    } catch (e) {
+      dispatch({ type: "ERROR", message: errText(e) });
+    }
+  }
+
+  /**
+   * 在当前选中段的样式上打补丁。
+   *
+   * 全空 ⇒ 存 `null`（后端也是这个口径：库里不存"存在但什么都没有"的样式）。
+   * 每一维都传 `null` 来表示"这一维没设"，所以取消某一维走的也是这里。
+   */
+  function patchSel(patch: Partial<ParaStyle>) {
+    if (!selPara) return;
+    const cur: ParaStyle = selPara.style ?? { bold: false, italic: false, color: null, bg: null };
+    const next: ParaStyle = { ...cur, ...patch };
+    const empty = !next.bold && !next.italic && next.color == null && next.bg == null;
+    void applyStyle(selPara.index, empty ? null : next);
+  }
+
   return (
     <>
       {/*
@@ -543,7 +753,9 @@ export function PrompterView() {
       */}
       <div
         ref={containerRef}
-        className={`viewport${config?.mirror ? " mirror" : ""}${quickJump ? " quick" : ""}`}
+        className={`viewport${config?.mirror ? " mirror" : ""}${quickJump ? " quick" : ""}${
+          styleEdit ? " styling" : ""
+        }`}
       >
         {script.paragraphs.map((p) => {
           const paraIsRead = p.index < curPara;
@@ -577,6 +789,9 @@ export function PrompterView() {
               quickJump={quickJump}
               downRef={downRef}
               seekFromPoint={seekFromPoint}
+              styleEdit={styleEdit}
+              selected={styleEdit && sel === p.index}
+              onPick={() => setSel(sel === p.index ? null : p.index)}
             />
           );
         })}
@@ -586,11 +801,33 @@ export function PrompterView() {
         接管中的提示。**必须显示** —— 否则用户会以为"跟读失灵了"，
         而它其实是我们主动让位。少这一个条，"手动接管"就变成了一个
         让人困惑的故障。
+
+        ★ 标重点时让位 —— 两条同时出现在底部会叠在一起（都挂在 bottom 附近），
+          而且那时"跟读暂停"这句话也不重要了：用户正在改稿，不是在看稿。
       */}
-      {manual && (
+      {manual && !styleEdit && (
         <div className="manual-chip" data-interactive>
           手动浏览中 · 跟读暂停，停手后自动接回
         </div>
+      )}
+
+      {styleEdit && (
+        <StyleBar
+          presets={state.stylePresets}
+          where={selPara ? head(selPara.text) : null}
+          style={selPara?.style ?? null}
+          onToggle={(k) => {
+            const cur = selPara?.style ?? null;
+            if (k === "bold") patchSel({ bold: !cur?.bold });
+            else patchSel({ italic: !cur?.italic });
+          }}
+          onColor={(i) => patchSel({ color: i })}
+          onBg={(i) => patchSel({ bg: i })}
+          onClear={() => {
+            if (selPara) void applyStyle(selPara.index, null);
+          }}
+          onDone={() => dispatch({ type: "STYLE_EDIT", on: false })}
+        />
       )}
 
       <DragOverlay />

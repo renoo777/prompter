@@ -61,6 +61,8 @@ function HistoryItem({
 export function ScriptHistory() {
   const { state, dispatch } = useApp();
   const { historyOpen, scripts, scriptAvail } = state;
+  // 空台上没有可标的段落 —— 「标重点」按钮跟着列表一起显示/隐藏。
+  const hasScript = (state.script?.total_chars ?? 0) > 0;
   const [confirmClear, setConfirmClear] = useState(false);
   const boxRef = useRef<HTMLDivElement>(null);
 
@@ -218,6 +220,26 @@ export function ScriptHistory() {
         >
           粘贴一段
         </button>
+        {/*
+          「标重点」放在这里，而不是顶栏再加一颗图标 ——
+          顶栏那一行只有 46px、最多 5 颗，加一颗就要从标题身上扣。
+          而它服务的对象就是**这份稿件**，与「打开文件 / 粘贴一段」同一类
+          （都是对稿件的动作），放这儿在语义上是对的，也不必挤顶栏。
+
+          ★ 没有稿子时它没有意义（点了也没得标），所以跟着列表一起隐藏 ——
+            一颗按下去什么都不会发生的按钮，比没有这颗按钮更糟。
+        */}
+        {hasScript && (
+          <button
+            className="btn"
+            onClick={() => {
+              dispatch({ type: "HISTORY", open: false });
+              dispatch({ type: "STYLE_EDIT", on: true });
+            }}
+          >
+            标重点
+          </button>
+        )}
       </div>
 
       {scripts.length === 0 ? (

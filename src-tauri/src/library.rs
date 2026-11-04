@@ -23,6 +23,75 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::script::{ParaStyle, Paragraph};
+
+/// 一条段落样式的存档。
+///
+/// # 为什么要带 `h`（段落文本指纹）
+///
+/// 段落**序号**会随"上面加一行、删一段"整体漂移。只按序号存，用户改一次稿
+/// 就可能把"这段别念"的红字挂到别的段落上 —— 标错比不标危险得多（他会照着
+/// "这段不用念"跳过一段真正要念的内容）。所以每条都带一份文本指纹，
+/// **对不上就整条丢掉**：宁可不显示样式，也不要标错段。
+///
+/// 代价：改过字的那一段会丢掉样式（其余段落不受影响）。这是有意的取舍 ——
+/// 「样式跟着可见的文本走」比「样式跟着看不见的序号走」可预期。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct StyleSlot {
+    pub h: String,
+    #[serde(default)]
+    pub style: Option<ParaStyle>,
+}
+
+/// 段落文本的指纹（与 `id` 同一个 hash，跨编译器稳定）。
+pub fn para_hash(text: &str) -> String {
+    hash_hex(text)
+}
+
+/// 把库里的样式挂到刚切好的段落上 —— **序号与指纹都对得上**才挂。
+pub fn attach_styles(paragraphs: &mut [Paragraph], slots: &[StyleSlot]) {
+    for (i, p) in paragraphs.iter_mut().enumerate() {
+        let Some(slot) = slots.get(i) else { break };
+        if slot.h == para_hash(&p.text) {
+            p.style = slot.style;
+        }
+    }
+}
+
+/// 把段落上现有的样式导出成存档（含没有样式的段落，保持序号对齐）。
+pub fn slots_of(paragraphs: &[Paragraph]) -> Vec<StyleSlot> {
+    paragraphs
+        .iter()
+        .map(|p| StyleSlot {
+            h: para_hash(&p.text),
+            style: p.style.filter(|s| !s.is_empty()),
+        })
+        .collect()
+}
+
+/// 把样式从旧段落搬到新段落：**按文本认同一段**，不看序号。
+///
+/// 用在"改稿"上：用户改了几个字再保存，段落是重新切过的 —— 序号可能整体变了，
+/// 但没改过的那些段落文本一字不差，样式应当跟着走。改过字的段落自然认不出来，
+/// 样式丢弃（与 `StyleSlot` 的取舍一致）。
+pub fn carry_styles(old: &[Paragraph], new: &mut [Paragraph]) {
+    use std::collections::HashMap;
+    let mut by_text: HashMap<&str, ParaStyle> = HashMap::new();
+    for p in old {
+        if let Some(s) = p.style.filter(|s| !s.is_empty()) {
+            by_text.insert(p.text.as_str(), s);
+        }
+    }
+    if by_text.is_empty() {
+        return;
+    }
+    for p in new.iter_mut() {
+        if let Some(s) = by_text.get(p.text.as_str()) {
+            p.style = Some(*s);
+        }
+    }
+}
+
 /// 索引文件格式版本。将来若改结构，靠它做迁移而不是猜。
 pub const LIBRARY_VERSION: u32 = 1;
 
@@ -64,6 +133,12 @@ pub struct ScriptEntry {
     /// 仅 pasted 类：相对 `<配置目录>` 的副本路径，形如 `scripts/<id>.txt`。
     #[serde(default)]
     pub copy_rel: Option<String>,
+    /// 段落样式（按序号存，每条带文本指纹）。空 = 这份稿没标过样式。
+    ///
+    /// ★ 不进 `.txt` 副本：样式进文本会改变显示文本，而逐字高亮与点句
+    ///   都建立在"显示文本 == 段落文本"这个等式上（见 `script::ParaStyle`）。
+    #[serde(default)]
+    pub styles: Vec<StyleSlot>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -179,6 +254,7 @@ impl ScriptLibrary {
             last_used: now,
             use_count: 1,
             copy_rel: None,
+            styles: Vec::new(),
         });
         (id, true)
     }
@@ -205,6 +281,7 @@ impl ScriptLibrary {
             last_used: now,
             use_count: 1,
             copy_rel: Some(copy_rel_of(&id)),
+            styles: Vec::new(),
         });
         id
     }
@@ -442,5 +519,117 @@ mod tests {
         let l: ScriptLibrary = serde_json::from_str("{}").unwrap();
         assert_eq!(l.version, LIBRARY_VERSION);
         assert!(l.entries.is_empty());
+    }
+
+    // -- 段落样式 -----------------------------------------------------------
+
+    fn para(text: &str) -> Paragraph {
+        Paragraph {
+            index: 0,
+            text: text.to_string(),
+            sentences: Vec::new(),
+            blank_before: 0,
+            heading: false,
+            style: None,
+        }
+    }
+
+    fn red() -> ParaStyle {
+        ParaStyle {
+            bold: true,
+            italic: false,
+            color: Some(1),
+            bg: None,
+        }
+    }
+
+    #[test]
+    fn styles_survive_a_json_round_trip() {
+        // 样式存在 scripts.json 里，编码一次再读回来必须一模一样 ——
+        // 少一个 `serde(default)` 就会让**整份稿件库**读不出来，
+        // 表现是"升级之后历史全空了"。
+        let mut l = ScriptLibrary::default();
+        let id = l.upsert_pasted("正文", "粘贴", 2, 2);
+        let mut p = para("正文");
+        p.style = Some(red());
+        l.entries[0].styles = slots_of(&[p]);
+        let back: ScriptLibrary = serde_json::from_str(&serde_json::to_string(&l).unwrap()).unwrap();
+        assert_eq!(back.entry(&id).unwrap().styles[0].style, Some(red()));
+    }
+
+    #[test]
+    fn old_payload_without_styles_still_loads() {
+        // 老版本的 scripts.json 没有 `styles` 字段 —— 必须能读，且默认空。
+        let json = r#"{"version":1,"entries":[{"id":"p1","source":"pasted","title":"旧稿","chars":2,"last_used":1}]}"#;
+        let l: ScriptLibrary = serde_json::from_str(json).unwrap();
+        assert!(l.entries[0].styles.is_empty());
+    }
+
+    #[test]
+    fn attach_styles_needs_both_index_and_fingerprint() {
+        let mut ps = vec![para("第一段"), para("第二段")];
+        let slots = vec![
+            StyleSlot { h: para_hash("第一段"), style: Some(red()) },
+            // 指纹对不上（这一段被改过字）⇒ 整条丢掉，宁可不显示也不标错段
+            StyleSlot { h: para_hash("改过的"), style: Some(red()) },
+        ];
+        attach_styles(&mut ps, &slots);
+        assert_eq!(ps[0].style, Some(red()), "指纹一致要挂上");
+        assert_eq!(ps[1].style, None, "指纹不一致必须丢掉，不能按序号瞎挂");
+    }
+
+    #[test]
+    fn attach_styles_ignores_slots_past_the_end() {
+        // 稿子比存档短（用户删了几段）：多出来的存档不能越界，也不能 panic
+        let mut ps = vec![para("只剩一段")];
+        let slots = vec![
+            StyleSlot { h: para_hash("只剩一段"), style: Some(red()) },
+            StyleSlot { h: para_hash("已经删了"), style: Some(red()) },
+        ];
+        attach_styles(&mut ps, &slots);
+        assert_eq!(ps[0].style, Some(red()));
+        assert_eq!(ps.len(), 1);
+    }
+
+    #[test]
+    fn slots_of_keeps_one_slot_per_paragraph() {
+        // 没样式的段落也要留一条占位，否则后面所有段落整体前移一位
+        let mut a = para("有样式");
+        a.style = Some(red());
+        let slots = slots_of(&[a, para("没样式")]);
+        assert_eq!(slots.len(), 2);
+        assert_eq!(slots[0].style, Some(red()));
+        assert_eq!(slots[1].style, None);
+        assert_eq!(slots[1].h, para_hash("没样式"));
+    }
+
+    #[test]
+    fn empty_style_is_not_stored() {
+        // 全空的样式等于没样式：库里不该出现 "样式存在但什么都没有" 的条目
+        let mut p = para("清空过");
+        p.style = Some(ParaStyle::default());
+        assert_eq!(slots_of(&[p])[0].style, None);
+    }
+
+    #[test]
+    fn carry_styles_follows_the_text_not_the_index() {
+        // 用户把一段挪到最前面：样式必须跟着那段文字走
+        let mut old0 = para("第二段");
+        old0.style = Some(red());
+        let old = vec![para("第一段"), old0];
+        let mut new = vec![para("第二段"), para("第一段")];
+        carry_styles(&old, &mut new);
+        assert_eq!(new[0].style, Some(red()), "文字没变，样式要跟过去");
+        assert_eq!(new[1].style, None);
+    }
+
+    #[test]
+    fn carry_styles_drops_what_was_rewritten() {
+        let mut old0 = para("这句话有个错字");
+        old0.style = Some(red());
+        let old = vec![old0];
+        let mut new = vec![para("这句话没有错字了")];
+        carry_styles(&old, &mut new);
+        assert_eq!(new[0].style, None, "改过字的段落认不出来，样式丢弃（有意的取舍）");
     }
 }

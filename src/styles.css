@@ -43,6 +43,29 @@
   --warn: 245 158 11;
   --err: 239 68 68;
 
+  /* 段落样式的预设色（「标重点」）。
+   *
+   * ★ 数量由 Rust 侧 `script::COLOR_PRESETS` / `BG_PRESETS` 说了算，
+   *   这里只是**同一个数字的另一半**：那边加一个，这里必须加一条，
+   *   否则前端会画出一颗透明色块（不报错、只是看不出颜色）。
+   *   这条对应关系由 `scripts/check-style-presets.py` 卡住。
+   *
+   * ★ 为什么文字色里**没有绿色**：绿是「正在念」的跟读色（`--read`）的默认值。
+   *   一个颜色一个意思 —— 用户标上去的绿字会和"念到这儿了"混成同一件事。
+   *   同理也没有和 `--accent`（蓝，用户按下的东西）撞色的档位。 */
+  --mark-0: 235 92 92; /* 红：必讲 */
+  --mark-1: 240 170 60; /* 琥珀：注意 */
+  --mark-2: 90 200 210; /* 青：补充 */
+  --mark-3: 176 146 250; /* 紫：参考 */
+
+  /* 底色的预设（高亮笔那种色带），只用于背景，所以可以更亮。 */
+  --markbg-0: 240 150 60;
+  --markbg-1: 250 210 60;
+  --markbg-2: 120 200 130;
+  /* 底色的透明度。深色主题下 0.14 刚好是"一层带色的雾"，
+   * 再高就会压掉字与背景的对比 —— 而提词器最不能做的事就是让字难读。 */
+  --pb-a: 0.14;
+
   /* 由设置页写入的排版参数 */
   --fs: 34px;
   --lh: 1.7;
@@ -151,6 +174,17 @@
   --ok: 5 150 105;
   --warn: 180 118 6;
   --err: 220 38 38;
+
+  /* 浅色底上要用**更深**的字色才看得清（深色主题那几档放上来会发白）；
+   * 底色反过来要更浅 —— 它盖的是白纸，深色带子会把字吞掉。 */
+  --mark-0: 190 28 42;
+  --mark-1: 150 92 6;
+  --mark-2: 6 120 134;
+  --mark-3: 104 64 198;
+  --markbg-0: 240 150 60;
+  --markbg-1: 248 208 50;
+  --markbg-2: 120 200 130;
+  --pb-a: 0.22;
 }
 
 * {
@@ -819,6 +853,69 @@ body {
   opacity: calc(1 - var(--dist, 0) * 0.1);
   margin-top: calc(var(--blank, 0) * 0.9em + 0.35em);
   margin-bottom: 22px;
+}
+
+/* ---- 用户标的样式（标重点）----
+ *
+ * # 层级是钉死的，顺序不能动
+ *
+ *     正在念的那个字（`.singing`） > 用户标的颜色 > 已读/未读的明暗
+ *
+ * 反过来写会在最要命的地方出问题：用户把一段标成红字之后，
+ * 「正在念哪个字」就看不见了 —— 而那是提词器唯一不能丢的信息。
+ *
+ * # 为什么用 `[data-pc]` 这种"存在即成立"的选择器
+ *
+ * 颜色索引在内联样式里（`--pc: var(--mark-2)`），但**有没有**这一维
+ * 只能用属性表达：`[data-pc]` 命中"标了字色"，没有这个属性就是"没标"。
+ * 于是"没标"不会写任何色值，主题默认色照旧生效。
+ */
+.para[data-pc] {
+  color: rgb(var(--pc));
+}
+
+/* 已读段落会整体退暗（`.para.read`）。用户自己标的颜色**压过**这一档：
+ * 那是他特意挑的，不是系统给的"这里读过了"的提示。 */
+.para[data-pc].read {
+  color: rgb(var(--pc));
+}
+
+/* 卡拉OK的三段原本各自写死了颜色（`--fg` / `--fg-dim`）。
+ * 标了字色的段落里要让回给用户的颜色，否则"唱过的"会变回白色，
+ * 整段看上去只有一半被标了色。 */
+.para[data-pc] .sentence.current .sung,
+.para[data-pc] .sentence.current .unsung {
+  color: inherit;
+}
+
+/* 播放头仍然用跟读色（它是层级最高的那一档）。
+ * 这条其实被下面更具体的 `.sentence.current .singing` 覆盖得到，
+ * 但显式写出来是为了让"层级"在源码里看得见，而不是靠权重去推理。 */
+.para[data-pc] .sentence.current .singing {
+  color: rgb(var(--read));
+}
+
+/* 底色：整段一条色带。
+ * ★ 不加内边距 —— 加了会把文字往右下推，整篇版式跟着挪，
+ *   而用户是在调"这一段看起来什么分量"，版面一动他就失去参照。 */
+.para[data-pb] {
+  background: rgb(var(--pb) / var(--pb-a));
+  border-radius: 6px;
+}
+
+/* 选中环。用 `outline` 而不是 `border`：它不占布局，段落位置一动都不动。
+ *
+ * ★ 颜色用 `--accent`（蓝），不用跟读色 —— 一个颜色一个意思：
+ *   蓝＝用户自己按下的东西（正在编辑哪一段），绿＝语音念到哪儿了。 */
+.para.sel {
+  outline: 1px solid rgb(var(--accent) / 0.6);
+  outline-offset: 5px;
+  border-radius: 3px;
+}
+
+/* 标重点模式下整片正文都可点（点＝选中这一段）。 */
+.viewport.styling .para {
+  cursor: pointer;
 }
 
 /* 句子的悬停反馈留着 —— 它是"这一句"最细粒度的提示。
@@ -2058,6 +2155,128 @@ input[type="range"]:active::-webkit-slider-thumb {
   white-space: nowrap;
   animation: pop-in var(--t-fast) var(--ease);
   pointer-events: none;
+}
+
+/* ---------------------------------------------------------------- 标重点浮条 */
+
+/* 底部浮条。与 `.manual-chip` 同一套定位（绝对定位挂在 `.app` 上），
+ * 但两者**不会同时出现**：进标重点模式时接管提示让位。
+ *
+ * ★ 为什么不占一行、不压在正文上方：改样式时用户的参照是那一段字，
+ *   任何让版面重排的东西都会让他"调一次、看两次"。浮条只压住视口底部
+ *   那一条 —— 编辑模式下那一条本来就不要求完整可见。
+ * ★ 它是**实色**、刻意不做玻璃（顶栏/浮层那一层才做）：浮条下面压着正文，
+ *   而用户此刻正盯着那几行字改样式 —— 让它透出字来，两边都看不清。 */
+.stylebar {
+  position: absolute;
+  left: 50%;
+  bottom: 14px;
+  transform: translateX(-50%);
+  z-index: 16;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  max-width: calc(100% - 24px);
+  padding: 6px 8px 6px 10px;
+  border-radius: var(--r-pill);
+  border: 1px solid rgb(var(--hair) / 0.12);
+  background: rgb(var(--panel) / 0.97);
+  box-shadow: 0 8px 24px rgb(0 0 0 / 0.3);
+  white-space: nowrap;
+  animation: pop-in var(--t-fast) var(--ease);
+}
+
+.stylebar .sb-hint {
+  padding: 0 6px;
+  font-size: 12px;
+  color: rgb(var(--fg-dim));
+}
+
+/* 选中段落的开头几个字 —— 用户滚远了也知道自己在改哪一段。
+ * 截断而不是换行：浮条的高度必须是一行，换行会让它压住正文两行。 */
+.stylebar .sb-where {
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 12px;
+  color: rgb(var(--fg-dim));
+}
+
+/* 「字色」「底色」两个两字标签。它们不是说明文字，是**防止选错**：
+ * 两排色块长得一样，选错一次就把整段刷成底色。 */
+.stylebar .sb-k {
+  margin-left: 2px;
+  font-size: 11px;
+  color: rgb(var(--fg-faint));
+}
+
+/* B / I 两颗。用字母而不是图标：粗体 B 与斜体 I 是全世界通用的写法，
+ * 自绘的「A 加粗」图标反而会被读成"字体设置"。 */
+.stylebar .sb-bi {
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border-radius: var(--r-ctrl);
+  border: 1px solid transparent;
+  background: transparent;
+  color: rgb(var(--fg));
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1;
+  cursor: pointer;
+  transition: background var(--t-fast) ease, border-color var(--t-fast) ease;
+}
+
+.stylebar .sb-bi.it {
+  font-style: italic;
+  font-family: Georgia, "Times New Roman", serif;
+}
+
+.stylebar .sb-bi:hover {
+  background: rgb(var(--fg) / 0.08);
+}
+
+/* 选中的那一档用蓝色 —— 一个颜色一个意思：蓝＝用户自己按下的东西。 */
+.stylebar .sb-bi.on {
+  background: rgb(var(--accent) / 0.2);
+  border-color: rgb(var(--accent) / 0.55);
+}
+
+/* 色块。字色是圆点、底色是方块 —— 形状先说话，标签只是兜底。
+ *
+ * ★ 颜色取自主题变量（`--sw` 由组件内联成 `var(--mark-N)`），
+ *   深色/浅色两套主题各自定义，所以同一颗"红"在两套主题下都看得清。 */
+.stylebar .sb-sw {
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: rgb(var(--sw));
+  box-shadow: 0 0 0 1px rgb(var(--hair) / 0.22);
+  cursor: pointer;
+  transition: box-shadow var(--t-fast) ease;
+}
+
+.stylebar .sb-sw.sq {
+  border-radius: 5px;
+}
+
+/* 选中态用**外圈**而不是改颜色：色块的颜色本身就是它的含义，
+ * 一改颜色就分不清"这是红色"还是"这是选中的颜色"了。 */
+.stylebar .sb-sw.on {
+  box-shadow: 0 0 0 2px rgb(var(--panel)), 0 0 0 3.5px rgb(var(--fg) / 0.85);
+}
+
+/* 浮条里的两颗文字按钮沿用全局 `.btn`（高度、圆角、主色都在那儿定义），
+ * 这里只收一下高度 —— 浮条本身只有 38px 高。 */
+.stylebar .btn {
+  height: 26px;
+  padding: 0 11px;
+}
+
+.stylebar .sb-done {
+  margin-left: 2px;
 }
 
 /* ---------------------------------------------------------------- 拖放覆盖层 */

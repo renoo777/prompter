@@ -18,6 +18,25 @@ export interface Sentence {
   line_break_before?: boolean;
 }
 
+/**
+ * 段落样式（只影响显示，**不影响文字与对位**）。
+ *
+ * ★ 它不能写进文本。逐字高亮靠 `offset_in_sentence` 的字符下标、点句靠累加
+ *   DOM 文本长度 —— 一旦样式以 Markdown 的 `**` 或自造的标记进入文本，
+ *   两边都会整体错位（点一句跳到另一句）。
+ *
+ * ★ 颜色是**预设索引**而不是 RGB：自由取色在深色/浅色/磨砂三档主题下会撞上
+ *   "红字在深色底上看不见"这种无解组合。索引交给 CSS，一个主题一套颜色。
+ */
+export interface ParaStyle {
+  bold: boolean;
+  italic: boolean;
+  /** 文字色预设索引（`0..style_presets.colors`），`null` = 跟随主题。 */
+  color: number | null;
+  /** 底色预设索引（`0..style_presets.bgs`），`null` = 无底色。 */
+  bg: number | null;
+}
+
 export interface Paragraph {
   index: number;
   text: string;
@@ -26,6 +45,8 @@ export interface Paragraph {
   blank_before?: number;
   /** Markdown 标题 / 结构行（`# 标题`，`#` 已在后端去掉）。 */
   heading?: boolean;
+  /** 用户标在这一段上的样式（稿件库里存着，载入时按文本指纹挂回）。 */
+  style?: ParaStyle | null;
 }
 
 export interface ScriptPayload {
@@ -371,6 +392,17 @@ export interface PreflightRow {
   hint: string;
 }
 
+/**
+ * 段落样式的预设数量，由**后端**给出（见 `script::COLOR_PRESETS`）。
+ *
+ * 前端按这个数渲染色块，不自己维护一份清单 —— 两处各写一份的话，
+ * 后端加了一个颜色，前端会**静静地**少显示一颗色块。
+ */
+export interface StylePresets {
+  colors: number;
+  bgs: number;
+}
+
 export interface BootstrapPayload {
   config: AppConfig;
   script: ScriptPayload;
@@ -381,6 +413,8 @@ export interface BootstrapPayload {
   found_models: ModelPaths[];
   asr_engine: string | null;
   app_version: string;
+  /** 段落样式的预设数量。 */
+  style_presets: StylePresets;
   /**
    * 可载入的稿件扩展名（不含点），由后端给出。
    *

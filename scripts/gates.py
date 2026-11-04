@@ -5,12 +5,13 @@
     python scripts/gates.py --build    # 再出一次 release 产物（= npm run tauri:build）
 
 四道门槛（见 docs/判断基线.md）：
-  1. cargo test --lib                     期望 118 passed / 6 ignored
-  2. cargo test --lib --no-default-features 期望 102 passed
+  1. cargo test --lib                     期望 126 passed / 6 ignored
+  2. cargo test --lib --no-default-features 期望 110 passed
   3. 上面两次构建零警告
   4. tsc --noEmit 零错 + vite build 通过 + 静态前端检查（STATIC_CHECKS，
      目前是 check-tooltips.py / check-hook-order.py / check-hover-silent.py /
-     check-glass-mode.py / check-doc-refs.py / check-feedback-link.py）
+     check-glass-mode.py / check-doc-refs.py / check-feedback-link.py /
+     check-style-presets.py）
 
 ★ 期望值只认下面那个 `EXPECT` 字典 —— 这份文件头只是说明，数字以 `EXPECT` 为准。
   ★ 2026-10-09 真踩：这两行一直停在 107 / 91，而 `EXPECT` 早已是 112 / 96
@@ -78,6 +79,7 @@ STATIC_CHECKS = [
     "check-glass-mode.py",
     "check-doc-refs.py",
     "check-feedback-link.py",
+    "check-style-presets.py",
 ]
 
 # ★ 2026-10-09（第十四轮·README 收成产品页）加了第四道 `check-doc-refs.py`。
@@ -113,6 +115,15 @@ STATIC_CHECKS = [
 #     那个要驱动一次 headless Edge、还要等前端 3 秒的启动检查，一轮 40 秒以上，
 #     所以它**不进** STATIC_CHECKS，只在动更新那块时手工跑）。
 
+# ★ 2026-11-04（段落样式轮）加了第七道 `check-style-presets.py`。
+#   段落颜色是**预设索引**：后端存"第 3 号色"，真正长什么样由 styles.css
+#   的主题块定义。于是同一个数字有两处实现（`script::COLOR_PRESETS` 与
+#   `--mark-N`），哪边多一个少一个都**不报错**：少的那档求值成空 ⇒ 那段字
+#   变回继承色（"颜色没生效"），只在浅色主题漏则更难发现。
+#   ⇒ 截不出（我只截一档主题）、编译不报（CSS 变量是字符串），几毫秒纯读文件。
+#   ★ 已做三向变异：COLOR_PRESETS=5 / 浅色删一条 --mark-3 / --markbg-1 写成 2
+#     ⇒ 三次都 rc=1 且各自报出是哪一块缺哪一档；还原后复跑 ✅。
+
 # ★ Windows 上必须写全名：subprocess 走 CreateProcess，会自动补 `.exe`，
 #   但**不会**补 `.cmd` ⇒ 写裸 `npm` 会 FileNotFoundError。
 NPM = "npm.cmd" if IS_WIN else "npm"
@@ -137,9 +148,14 @@ NPM = "npm.cmd" if IS_WIN else "npm"
 #   ★ 注意"改口径"必须成对：`consecutive_lines_merge_into_one_paragraph`
 #     这条旧测试被**改名并改写**成 `..._stay_separate_lines_...`（一进一出），
 #     所以净增是 +6 而不是 +7。
+# ★ 2026-11-04（段落样式轮·同一天）118→126 / 102→110：两处都 +8，全部来自
+#   `library` 里样式存档的那一组（JSON 往返 / 老索引无 styles 字段仍能读 /
+#   指纹不符就丢弃 / 存档比稿子长不越界 / 每段一条占位 / 空样式不存 /
+#   样式跟文字走而不跟序号走 / 改过字的段落丢样式）。
+#   仍然不依赖 local-asr —— 这些都在纯数据层。
 EXPECT = {
-    "default": {"passed": 118, "ignored": 6},
-    "no-default-features": {"passed": 102},
+    "default": {"passed": 126, "ignored": 6},
+    "no-default-features": {"passed": 110},
 }
 
 

@@ -177,6 +177,7 @@ pub fn run() {
             commands::load_script_from_path,
             commands::set_script_text,
             commands::clear_script,
+            commands::set_paragraph_style,
             commands::feed_hypothesis,
             commands::nudge,
             commands::goto,

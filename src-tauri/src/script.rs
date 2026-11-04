@@ -41,6 +41,53 @@
 
 use serde::{Deserialize, Serialize};
 
+/// 段落样式（**只影响显示，不影响文字与对位**）。
+///
+/// # 为什么样式是"段落的属性"而不是"文本里的标记"
+///
+/// 一旦样式写进文本（Markdown 的 `**`、或者自造的 `〔红〕`），显示文本就与
+/// `text` 不再相等 —— 而逐字高亮靠 `offset_in_sentence` 的字符下标、点句靠
+/// 累加 DOM 文本长度，两边都会整体错位。样式必须挂在**文本之外**。
+///
+/// # 为什么颜色是"预设索引"而不是 RGB
+///
+/// 自由取色在深色/浅色/磨砂三档主题下会撞上"红字在深色背景上看不见"这种
+/// 无解组合。索引交给 CSS 去定义每个主题下的实际颜色，主题一切颜色跟着切。
+/// 后续要加自定义颜色，再加一个 `custom: Option<[u8; 3]>` 覆盖索引即可。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct ParaStyle {
+    #[serde(default)]
+    pub bold: bool,
+    #[serde(default)]
+    pub italic: bool,
+    /// 文字色：预设索引（0..`COLOR_PRESETS`），`None` = 跟随主题
+    #[serde(default)]
+    pub color: Option<u8>,
+    /// 底色：预设索引（0..`BG_PRESETS`），`None` = 无底色
+    #[serde(default)]
+    pub bg: Option<u8>,
+}
+
+impl ParaStyle {
+    /// 全空 = 没有样式。库里不存空样式，判定统一走这里。
+    pub fn is_empty(&self) -> bool {
+        !self.bold && !self.italic && self.color.is_none() && self.bg.is_none()
+    }
+
+    /// 夹取预设索引的范围 —— 前端传越界值时**收敛**而不是报错，
+    /// 免得一个手滑的索引把整段渲染成透明。
+    pub fn clamp(mut self) -> Self {
+        self.color = self.color.map(|c| c.min(COLOR_PRESETS - 1));
+        self.bg = self.bg.map(|b| b.min(BG_PRESETS - 1));
+        self
+    }
+}
+
+/// 文字色预设数量（与 `styles.css` 的 `--mark-*` 一一对应）。
+pub const COLOR_PRESETS: u8 = 4;
+/// 底色预设数量（与 `styles.css` 的 `--markbg-*` 一一对应）。
+pub const BG_PRESETS: u8 = 3;
+
 /// 一个段落。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Paragraph {
@@ -62,6 +109,9 @@ pub struct Paragraph {
     /// 是不是 Markdown 标题 / 结构行（`# 标题`）。
     #[serde(default)]
     pub heading: bool,
+    /// 段落样式。`None` = 没有样式（绝大多数段落）。
+    #[serde(default)]
+    pub style: Option<ParaStyle>,
 }
 
 /// 一个句子（对位的显示粒度）。
@@ -417,6 +467,8 @@ pub fn build_script(raw: &str, title: Option<String>) -> Script {
             // 首段前面的空行是"文件开头的空行"，不是段距 —— 不给留白
             blank_before: if pi == 0 { 0 } else { (*blank_before).min(3) },
             heading: *heading,
+            // 样式不存在文本里，由调用方按库里的记录挂上（见 commands::attach_styles）
+            style: None,
         });
     }
 

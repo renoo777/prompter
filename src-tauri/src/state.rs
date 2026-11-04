@@ -384,6 +384,15 @@ pub fn merge_backend_owned(incoming: &mut AppConfig, current: &AppConfig) {
 
 pub struct Engine {
     pub script: Script,
+    /// 台上这份稿子在**稿件库**里的 id（`None` = 空台 / 不属于库里的任何一条）。
+    ///
+    /// # 为什么放在引擎上，而不是 `AppState` 上
+    ///
+    /// 段落样式只存在库里（`ScriptEntry.styles`），改样式时得靠这个 id 找回
+    /// "改的是哪一条"。而"换稿"与"记住是哪一条"必须是**同一个原子动作** ——
+    /// 分成两处写，迟早出现"台上是 B、样式写进了 A"，而那种错误在界面上
+    /// 只表现为"颜色标到别的段落上了"，没人会怀疑是 id 的问题。
+    pub script_id: Option<String>,
     /// 归一化字符流，对位算法的操作对象。与 `script.chars` 同步重建。
     pub flat: Vec<char>,
     pub aligner: Aligner,
@@ -401,6 +410,7 @@ impl Engine {
                 paragraphs: Vec::new(),
                 chars: Vec::new(),
             },
+            script_id: None,
             flat: Vec::new(),
             aligner: Aligner::new(Vec::new()),
             hyp: String::new(),
@@ -408,11 +418,12 @@ impl Engine {
         }
     }
 
-    /// 换稿：重建归一化序列与对位器。
-    pub(crate) fn set_script(&mut self, s: Script) {
+    /// 换稿：重建归一化序列与对位器，并记下这一份对应库里哪一条。
+    pub(crate) fn set_script(&mut self, s: Script, id: Option<String>) {
         self.flat = script::flat_chars(&s);
         self.aligner.reset_with(self.flat.clone());
         self.script = s;
+        self.script_id = id;
         self.hyp.clear();
     }
 
@@ -538,6 +549,14 @@ pub struct PlatformInfo {
     pub has_taskbar: bool,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct StylePresets {
+    /// 文字色预设数量（`script::COLOR_PRESETS`）。
+    pub colors: u8,
+    /// 底色预设数量（`script::BG_PRESETS`）。
+    pub bgs: u8,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BootstrapPayload {
     pub config: AppConfig,
@@ -549,6 +568,13 @@ pub struct BootstrapPayload {
     pub found_models: Vec<ModelPaths>,
     pub asr_engine: Option<String>,
     pub app_version: String,
+    /// 段落样式的预设数量。
+    ///
+    /// ★ 与 `script_exts` 同一个道理：**由后端给，前端不自己写一份**。
+    ///   前端按这个数渲染色块，于是"加一个颜色"只要改 Rust 常量与
+    ///   `styles.css` 两处；前端漏改的表现会是"少一颗色块"，
+    ///   而少的那一颗用户根本不知道它该存在。
+    pub style_presets: StylePresets,
     /// 可载入的稿件扩展名（不含点）。**前端不自己维护这份清单** ——
     /// 文件对话框的 filter、空态文案、拖放报错都从这儿取，
     /// 保证"对话框里能选到的"和"拖进来能载入的"永远是同一批。

@@ -22,6 +22,7 @@ import type {
   ScriptEntry,
   ScriptPayload,
   StealthReport,
+  StylePresets,
 } from "../types";
 
 import { readColorRgb } from "./readColors";
@@ -93,6 +94,16 @@ export interface State {
   scriptExts: string[];
   /** 上面那份清单给用户看的样子。 */
   scriptExtsHint: string;
+  /** 段落样式的预设数量 —— 同样由后端给，前端照着渲染。 */
+  stylePresets: StylePresets;
+  /**
+   * 「标重点」编辑模式。
+   *
+   * ★ 它是一维独立状态，不是 `script` 的附属：进入这个模式会**接管点击**
+   *   （点段落＝选中，而不是把朗读进度接过去）。少了这一维，界面就没有
+   *   任何东西能说明"现在这一下点击到底是什么意思"。
+   */
+  styleEdit: boolean;
   /** 阻断性错误，显示在顶栏状态槽 */
   error: string | null;
   /**
@@ -218,6 +229,10 @@ const initialState: State = {
   // 也能选到正确的一批 —— 虽然几乎撞不上，但兜底值本身不该是错的。
   scriptExts: ["txt", "md", "markdown", "docx", "pptx"],
   scriptExtsHint: ".txt / .md / .docx / .pptx",
+  // 兜底值只在 bootstrap 回来之前生效（那一瞬间）。写成和 Rust 侧常量一致，
+  // 是为了"打开应用的头 50 毫秒里点进编辑模式"也能画出完整的色块。
+  stylePresets: { colors: 4, bgs: 3 },
+  styleEdit: false,
   error: null,
   warning: null,
   notice: null,
@@ -246,6 +261,14 @@ export type Action =
   | { type: "BOOTSTRAP"; payload: Partial<State> }
   | { type: "CURSOR"; cursor: CursorPayload }
   | { type: "SCRIPT"; script: ScriptPayload }
+  /**
+   * 稿件内容换了，但**不是换稿**（只改了段落样式）。
+   *
+   * ★ 必须与 `SCRIPT` 分开：那条会把光标与进度归零。改一段字的颜色就把
+   *   朗读进度打回开头，用户会以为"点了个样式，稿子重念了"。
+   */
+  | { type: "SCRIPT_STYLE"; script: ScriptPayload }
+  | { type: "STYLE_EDIT"; on: boolean }
   | { type: "ASR"; text: string; level: number }
   | { type: "ASR_STATUS"; status: AsrStatusPayload }
   | { type: "STEALTH"; report: StealthReport }
@@ -323,9 +346,16 @@ function reducer(state: State, action: Action): State {
           : state.cursor,
       };
 
+    case "SCRIPT_STYLE":
+      // 只换段落样式 ⇒ 不动光标。改一段字的颜色把朗读进度打回开头，
+      // 用户会以为"点了个样式，稿子重念了"。
+      return { ...state, script: action.script };
+
+    case "STYLE_EDIT":
+      return { ...state, styleEdit: action.on };
+
     case "ASR":
       return { ...state, asrText: action.text, asrLevel: action.level };
-
     case "ASR_STATUS": {
       const next = { ...state, asrStatus: action.status };
       /*

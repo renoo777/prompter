@@ -92,6 +92,21 @@ const totalChars = paragraphs.reduce(
   0,
 );
 
+/*
+ * `mark=1`：给示例稿预置两段样式（红字 / 琥珀底）。
+ *
+ * ★ 默认**不加** —— 加了之后所有既有预览图里都会凭空多出彩色段落，
+ *   而那些图是别的验收项的凭据。要看渲染效果就显式传 `mark=1`。
+ *
+ * 预置的是「只有一维」和「两维叠加」各一段，正好验两件事：
+ *   ① 单标字色时其它维度不该跟着变；
+ *   ② 字色 + 底色同时存在时都能看见（不是谁把谁盖掉）。
+ */
+if (params.get("mark") === "1") {
+  paragraphs[1].style = { bold: false, italic: false, color: 0, bg: null };
+  paragraphs[2].style = { bold: true, italic: false, color: null, bg: 1 };
+}
+
 const nowSec = Math.floor(Date.now() / 1000);
 
 /*
@@ -446,6 +461,9 @@ const bootstrap = {
   app_version: "0.1.0",
   script_exts: ["txt", "md", "markdown", "docx", "pptx"],
   script_exts_hint: "txt / md / docx / pptx",
+  // 与 Rust 侧 `script::COLOR_PRESETS` / `BG_PRESETS` 同值。
+  // 桩若和真后端不一致，"少画了一颗色块"在预览里根本看不出来。
+  style_presets: { colors: 4, bgs: 3 },
 };
 
 const scriptEntry = {
@@ -495,6 +513,13 @@ const zoneReports = [];
  * 缓存输出里会带 `gotoN=` / `gotoPos=`。
  */
 const gotoPos = [];
+/*
+ * ★ 记下每一次 `set_paragraph_style`：`<序号>:set` 或 `<序号>:null`。
+ *
+ * 光看截图分不出"色块被点上了"和"样式真的落到了那一段上" ——
+ * 前者只要按钮自己的状态对就行，后者要后端被调到。量 `markApplies=`。
+ */
+const markApplies = [];
 
 const COMMANDS = {
   bootstrap: () => bootstrap,
@@ -504,6 +529,31 @@ const COMMANDS = {
   },
   list_scripts: () => [scriptEntry],
   script_availability: () => [[scriptEntry.id, true]],
+  /*
+   * 改某一段的样式。**真的改在 fixture 上并把整份稿件回出去** ——
+   * 与 Rust 侧 `set_paragraph_style` 同构（它也是「改完返回整份」）。
+   *
+   * ★ 必须返回**新对象**（`paragraphs.map` 一份浅拷贝）：
+   *   直接把 `bootstrap.script` 那个引用回出去，React 拿到的 `script`
+   *   引用不变 ⇒ 组件不重渲染 ⇒ 预览里"样式怎么点都不生效"，
+   *   看着像功能没做，其实只是桩把同一个对象又递了一遍。
+   */
+  set_paragraph_style: (a) => {
+    const i = a && a.paragraph;
+    const p = paragraphs[i];
+    if (!p) throw new Error("段落序号越界");
+    // 与后端同一个口径：全空的样式存成 `null`（库里不存空样式）
+    const st = a.style;
+    const empty =
+      !st || (!st.bold && !st.italic && st.color == null && st.bg == null);
+    p.style = empty ? null : { ...st };
+    markApplies.push(`${i}:${empty ? "null" : "set"}`);
+    return {
+      title: bootstrap.script.title,
+      total_chars: bootstrap.script.total_chars,
+      paragraphs: paragraphs.map((x) => ({ ...x })),
+    };
+  },
   preflight: () => preflight,
   get_config: () => config,
   /*
@@ -1259,6 +1309,46 @@ waitFor(".topbar .icon-btn", () => {
       const el = iconAt(1);
       diag.push(`docBtn=${el ? "found" : "none"}`);
       el?.click();
+    });
+  }
+
+  /*
+   * `click=mark` —— 走一遍「标重点」的完整用户路径：
+   *   稿件面板 → 标重点 → 点第 3 段 → 点「字色 1」。
+   *
+   * ★ 为什么不能只截一张带浮条的图：这条路上有三处会**静默**出错的地方，
+   *   三处都在图上看着正常：
+   *     ① 进了模式但点击段落仍然是"跳进度"（浮条出来了，可就是选不中）；
+   *     ② 选中了但浮条不认得当前样式（色块不亮）；
+   *     ③ 色块亮了但样式没落到那一段（只改了前端自己那份状态）。
+   *   ⇒ 分别量 `markSel=`（②③的前提）、`sbSelOn=`（②）、
+   *     `markPc=` / `markApplies=`（③）。
+   */
+  if (click === "mark") {
+    steps.push(() => {
+      const el = iconAt(1);
+      diag.push(`docBtn=${el ? "found" : "none"}`);
+      el?.click();
+    });
+    steps.push(() => {
+      const btn = Array.from(document.querySelectorAll(".history-act .btn")).find((b) =>
+        (b.textContent || "").includes("标重点"),
+      );
+      diag.push(`markEntry=${btn ? "found" : "none"}`);
+      btn?.click();
+    });
+    steps.push(() => {
+      const ps = document.querySelectorAll(".viewport .para");
+      diag.push(`paraN=${ps.length}`);
+      // 第 3 段（下标 2）：既不是标题，也不是当前句所在的那一段
+      if (ps[2]) realTap(ps[2]);
+    });
+    // 点色块的这一拍要**等选中先落地**（React 提交 + 重渲染），
+    // 否则浮条还是"点一段文字，再选样式"那一态，色块压根不在 DOM 里。
+    steps.push(() => {
+      const sw = document.querySelector('.stylebar [aria-label="字色 1"]');
+      diag.push(`sw1=${sw ? "found" : "none"}`);
+      if (sw) realTap(sw);
     });
   }
 
@@ -2608,6 +2698,36 @@ waitFor(".topbar .icon-btn", () => {
     const gear = document.querySelector(".topbar .icon-btn.has-update");
     parts.push(`gearDot=${gear ? "yes" : "no"}`);
     parts.push(`gearW=${gear ? Math.round(gear.getBoundingClientRect().width) : 0}`);
+
+    /*
+     * 「标重点」的呈现。
+     *
+     * ★ `markPc` / `markPb` 量的是**计算值**而不是"有没有加 class"：
+     *   颜色写错（例如 `--mark-1` 根本不存在）时 class 照样在、色块照样亮，
+     *   只有计算出来的 `rgba(0,0,0,0)` 会说实话。
+     * ★ `sbSw` 必须等于 4 + 3（字色 + 底色）—— 它同时把"前端是不是照着
+     *   后端给的预设数渲染"这件事钉住了。
+     */
+    const sb = document.querySelector(".stylebar");
+    parts.push(`stylebar=${sb ? "yes" : "no"}`);
+    if (sb) {
+      const sr = sb.getBoundingClientRect();
+      parts.push(
+        `sbH=${Math.round(sr.height)}`,
+        `sbBottom=${Math.round(innerHeight - sr.bottom)}`,
+        `sbSw=${sb.querySelectorAll(".sb-sw").length}`,
+        `sbOn=${sb.querySelectorAll(".sb-sw.on").length}`,
+        `sbText=${nowrap((sb.textContent || "").slice(0, 8))}`,
+      );
+    }
+    parts.push(`markSel=${document.querySelector(".viewport .para.sel") ? "yes" : "no"}`);
+    parts.push(`markApplies=${markApplies.length ? markApplies.join(",") : "none"}`);
+    {
+      const pc = document.querySelector(".viewport .para[data-pc]");
+      parts.push(`markPc=${pc ? nowrap(getComputedStyle(pc).color) : "none"}`);
+      const pb = document.querySelector(".viewport .para[data-pb]");
+      parts.push(`markPb=${pb ? nowrap(getComputedStyle(pb).backgroundColor) : "none"}`);
+    }
 
     parts.push(`vw=${innerWidth}`, `vh=${innerHeight}`);
     } catch (e) {

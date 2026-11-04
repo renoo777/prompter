@@ -90,6 +90,11 @@ pub fn bootstrap(state: State<AppState>) -> Result<BootstrapPayload, String> {
         found_models: state::scan_models(&state.paths.models_dir),
         asr_engine: Some(compute_asr_status(&state).engine),
         app_version: env!("CARGO_PKG_VERSION").to_string(),
+        // 样式预设的数量同样由后端给（见 `BootstrapPayload::style_presets`）。
+        style_presets: state::StylePresets {
+            colors: script::COLOR_PRESETS,
+            bgs: script::BG_PRESETS,
+        },
         // 支持的稿件格式由**后端给出**，前端不再自己维护一份。
         // 前端那份一旦和后端分叉，表现是"文件对话框里选不到 .docx"
         // 或者"拖进来报不支持"—— 而这两处判断本来该是同一个答案。
@@ -147,18 +152,36 @@ pub fn set_script_text(
     text: String,
     title: Option<String>,
 ) -> Result<ScriptPayload, String> {
-    let s = script::build_script(&text, title);
-    let payload = apply_script(&state, s)?;
+    let mut s = script::build_script(&text, title);
+
+    // 改稿：段落是重新切过的，序号可能整体变了，但**没改过的段落文本一字不差** ——
+    // 样式按文本搬过去（`carry_styles` 的取舍写在 `library.rs`）。
+    // 不搬的话，用户改一个错别字回来会发现整篇的红字全没了，
+    // 于是下次就不敢改稿了 —— 那比不能标样式更糟。
+    {
+        let e = state.engine.lock().map_err(|_| "稿件锁异常".to_string())?;
+        library::carry_styles(&e.script.paragraphs, &mut s.paragraphs);
+    }
+
+    let payload = stage_script(&state, s, Some(library::pasted_id(&text)))?;
     // 粘贴稿必须落盘副本 —— 它没有原文件可依，不落盘的话
     // 历史里会有一条点开是空的（比没有历史更糟）
     record_pasted_use(&state, &text, &payload.title, payload.total_chars);
+    // 改稿时样式按文本搬到了新段落（见上面的 `carry_styles`）——
+    // 搬过来的那些必须**顺手存进这条新条目**。不存的话，用户改一个错别字、
+    // 关掉应用再打开，整篇红字就没了，而他只会得出"样式没记住"。
+    persist_styles(
+        &state,
+        &library::pasted_id(&text),
+        library::slots_of(&payload.paragraphs),
+    );
     refresh_tray(&state);
     Ok(payload)
 }
 
 #[tauri::command]
 pub fn clear_script(state: State<AppState>) -> Result<ScriptPayload, String> {
-    apply_script(&state, script::build_script("", None))
+    stage_script(&state, script::build_script("", None), None)
 }
 
 /// 把一段文本当作「识别结果」喂给对位器。
@@ -206,7 +229,7 @@ pub(crate) fn load_into_engine(
     // 而不是把当前稿件替换成一个空的。
     //
     // 这条守的是「载入路径必须全有或全无」：提词器最不能接受的失败
-    // 就是"念到一半稿子没了"。判定放在 `apply_script` **之前**，
+    // 就是"念到一半稿子没了"。判定放在 `stage_script` **之前**，
     // 所以任何一条失败路径上台上的稿件都一字未动。
     //
     // 判"空"判的是**抽出来的文本**而不是原始字节：.docx 的原始字节永远不为空，
@@ -220,13 +243,102 @@ pub(crate) fn load_into_engine(
         });
     }
 
-    apply_script(state, s)
+    // 文件类稿件的库 id 由**路径**算（见 `library::file_id`）——
+    // 与 `record_file_use` 里用的同一个函数，两处算法分叉的话样式会写到别的条目上。
+    let id = library::file_id(&path.to_string_lossy());
+    stage_script(state, s, Some(id))
 }
 
-pub(crate) fn apply_script(state: &AppState, s: script::Script) -> Result<ScriptPayload, String> {
+/// 把一份切好的稿子放上台，同时挂上它在库里存着的段落样式。
+///
+/// `id` 是这份稿子在稿件库里的那一条；没有对应条目（空台、还没入历史）时传 `None`，
+/// 此时台上照常能念，只是改样式没有地方存 —— 那种情况下改样式会记一条警告，
+/// 而不是静默丢掉。
+pub(crate) fn stage_script(
+    state: &AppState,
+    mut s: script::Script,
+    id: Option<String>,
+) -> Result<ScriptPayload, String> {
+    // 样式只存在库里，上台时才按「序号 + 文本指纹」挂回来。
+    //
+    // ★ 锁的顺序固定为「先库、后引擎」，且两者**不同时持有** ——
+    //   反序会在某条路径上凑成死锁，而死锁的表现是"点了载入稿件就整个界面卡住"，
+    //   排查时完全看不出跟样式有关。
+    if let Some(id) = id.as_deref() {
+        if let Ok(lib) = state.library.lock() {
+            if let Some(entry) = lib.entry(id) {
+                library::attach_styles(&mut s.paragraphs, &entry.styles);
+            }
+        }
+    }
+
     let mut e = state.engine.lock().map_err(|_| "稿件锁异常".to_string())?;
-    e.set_script(s);
+    e.set_script(s, id);
     Ok(ScriptPayload::from(&e.script))
+}
+
+// ---------------------------------------------------------------------------
+// 段落样式
+// ---------------------------------------------------------------------------
+
+/// 给某一段设样式（`None` = 清除这一段的样式）。
+///
+/// 返回整份稿件：样式是段落的属性，改完之后前端要按新载荷重渲染，
+/// 另起一条"刷新样式"的消息只会多一份可以不同步的状态。
+///
+/// ★ 只改内存里的 `Paragraph.style`，**不动文本** —— 一旦把样式编码进文本，
+///   `offset_in_sentence` 与点句用的字符下标会整体错位（见 `script::ParaStyle`）。
+#[tauri::command]
+pub fn set_paragraph_style(
+    state: State<AppState>,
+    paragraph: u32,
+    style: Option<script::ParaStyle>,
+) -> Result<ScriptPayload, String> {
+    let (payload, id, slots) = {
+        let mut e = state.engine.lock().map_err(|_| "稿件锁异常".to_string())?;
+        let idx = paragraph as usize;
+        if idx >= e.script.paragraphs.len() {
+            return Err("段落序号越界，稿件可能刚被换过".to_string());
+        }
+        // 越界的预设索引收敛而不报错：一个手滑的索引不该让整段变成透明。
+        e.script.paragraphs[idx].style = style.map(|s| s.clamp()).filter(|s| !s.is_empty());
+        (
+            ScriptPayload::from(&e.script),
+            e.script_id.clone(),
+            library::slots_of(&e.script.paragraphs),
+        )
+    };
+
+    // 存回库里。**样式不进 `.txt` 副本**，所以这里只写索引文件。
+    let Some(id) = id else {
+        log::warn!("[style] 台上的稿件不属于稿件库，本次样式只留在内存里");
+        return Ok(payload);
+    };
+    persist_styles(&state, &id, slots);
+    Ok(payload)
+}
+
+/// 把一组段落样式存回稿件库里的某一条。
+///
+/// 找不到条目 / 锁异常都只记日志、不向上抛：改样式的主路径已经成功了
+/// （内存里的段落样式就是界面上看到的那一份），为了一次落盘失败让界面报错
+/// 反而会让人以为"样式没设上"。
+fn persist_styles(state: &AppState, id: &str, slots: Vec<library::StyleSlot>) {
+    let snapshot = {
+        let Ok(mut lib) = state.library.lock() else {
+            log::warn!("[style] 稿件库锁异常，本次样式只留在内存里");
+            return;
+        };
+        let Some(entry) = lib.entries.iter_mut().find(|e| e.id == id) else {
+            log::warn!("[style] 稿件库里找不到 {id}，本次样式只留在内存里");
+            return;
+        };
+        entry.styles = slots;
+        lib.clone()
+    };
+    if let Err(e) = state::save_library(&state.paths, &snapshot) {
+        log::warn!("[style] 样式保存失败：{e}");
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -383,7 +495,7 @@ pub(crate) fn activate_script_inner(state: &AppState, id: &str) -> Result<Script
             let bytes = std::fs::read(&p).map_err(|e| format!("读取副本失败：{e}"))?;
             let (text, _) = script::decode_bytes(&bytes);
             let s = script::build_script(&text, Some(entry.title.clone()));
-            apply_script(state, s)?
+            stage_script(state, s, Some(entry.id.clone()))?
         }
     };
 
