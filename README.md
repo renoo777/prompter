@@ -62,7 +62,7 @@
 
 ### Windows
 
-**[下载 Prompter_0.1.1_x64-setup.exe](https://github.com/renoo777/prompter/releases/latest/download/Prompter_0.1.1_x64-setup.exe)**（6.91 MB）→ 双击 → 下一步。装完开始菜单里就有「Prompter」。
+**[下载 Prompter_0.1.2_x64-setup.exe](https://github.com/renoo777/prompter/releases/latest/download/Prompter_0.1.2_x64-setup.exe)**（6.92 MB）→ 双击 → 下一步。装完开始菜单里就有「Prompter」。
 
 * 装在**当前用户目录**下，不弹管理员授权。
 * 装这一次之后就不用再手动下了：下次有新版本，软件会在启动时自己提示，点一下就地更新。
@@ -188,7 +188,7 @@ build.bat              :: 出 release 产物 → src-tauri\target\release\prompt
 
 ### 出包 / 给别人用
 
-**Windows 的现成安装包在 [Releases](https://github.com/renoo777/prompter/releases) 里**（`Prompter_0.1.1_x64-setup.exe`，6.91 MB）。
+**Windows 的现成安装包在 [Releases](https://github.com/renoo777/prompter/releases) 里**（`Prompter_0.1.2_x64-setup.exe`，6.92 MB）。
 要自己出一个、或者给别的平台出，按下面走：
 
 | 场景 | 做法 | 结果 |

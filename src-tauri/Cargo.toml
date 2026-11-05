@@ -1,6 +1,6 @@
 [package]
 name = "prompter"
-version = "0.1.1"
+version = "0.1.2"
 description = "投屏隐身提词器 — 语音跟随滚动，会议共享时不可见"
 authors = ["超人强"]
 edition = "2021"
